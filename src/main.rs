@@ -31,6 +31,11 @@ struct Question {
     answer: i32,
 }
 
+struct QuestionRecord {
+    prompt: String,
+    elapsed: Duration,
+}
+
 #[derive(Clone)]
 struct GameConfig {
     add_max: i32,
@@ -133,8 +138,11 @@ impl QuestionGenerator {
 }
 
 struct App {
+    config: GameConfig,
     generator: QuestionGenerator,
     current: Question,
+    question_started_at: Instant,
+    history: Vec<QuestionRecord>,
     input: String,
     score: usize,
     solved: usize,
@@ -144,12 +152,15 @@ struct App {
 
 impl App {
     fn new(config: GameConfig, duration: Duration) -> Self {
-        let mut generator = QuestionGenerator::new(config);
+        let mut generator = QuestionGenerator::new(config.clone());
         let current = generator.next();
 
         Self {
+            config,
             generator,
             current,
+            question_started_at: Instant::now(),
+            history: Vec::new(),
             input: String::new(),
             score: 0,
             solved: 0,
@@ -170,9 +181,15 @@ impl App {
     fn try_advance_if_correct(&mut self) {
         if let Ok(value) = self.input.trim().parse::<i32>() {
             if value == self.current.answer {
+                let elapsed = self.question_started_at.elapsed();
+                self.history.push(QuestionRecord {
+                    prompt: self.current.prompt.clone(),
+                    elapsed,
+                });
                 self.score += 1;
                 self.solved += 1;
                 self.current = self.generator.next();
+                self.question_started_at = Instant::now();
                 self.input.clear();
             }
         }
@@ -278,11 +295,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     restore_terminal(&mut terminal)?;
 
     match result {
-        Ok(Some(app)) => {
-            println!("Time's up!");
-            println!("Solved: {}", app.solved);
-            Ok(())
-        }
+        Ok(Some(_)) => Ok(()),
         Ok(None) => {
             println!("Canceled.");
             Ok(())
@@ -300,7 +313,103 @@ fn run(
     };
 
     let app = run_game(terminal, setup.game, setup.duration)?;
+    run_results(terminal, &app)?;
     Ok(Some(app))
+}
+
+fn run_results(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &App,
+) -> Result<(), Box<dyn Error>> {
+    let mut scroll: usize = 0;
+
+    loop {
+        terminal.draw(|frame| {
+            let area = frame.area();
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .margin(1)
+                .constraints([
+                    Constraint::Length(6),
+                    Constraint::Min(6),
+                    Constraint::Length(3),
+                ])
+                .split(area);
+
+            let summary = vec![
+                Line::from(Span::styled(
+                    format!("Total score: {}", app.score),
+                    Style::default().add_modifier(Modifier::BOLD),
+                )),
+                Line::from(format!(
+                    "Addition range: {} to {}",
+                    ADD_MIN, app.config.add_max
+                )),
+                Line::from(format!(
+                    "Multiplication range: {} to {}",
+                    MUL_MIN, app.config.mul_max
+                )),
+                Line::from("Subtraction: reverse of addition"),
+                Line::from("Division: reverse of multiplication"),
+                Line::from(format!("Time limit: {} seconds", app.duration.as_secs())),
+            ];
+
+            let summary_widget = Paragraph::new(summary).block(
+                Block::default()
+                    .title("Session Summary")
+                    .borders(Borders::ALL),
+            );
+            frame.render_widget(summary_widget, chunks[0]);
+
+            let mut history_lines = Vec::new();
+            if app.history.is_empty() {
+                history_lines.push(Line::from("No solved questions."));
+            } else {
+                for (idx, record) in app.history.iter().enumerate() {
+                    history_lines.push(Line::from(format!(
+                        "{:>3}. {:<18}  {}",
+                        idx + 1,
+                        record.prompt,
+                        format_elapsed(record.elapsed)
+                    )));
+                }
+            }
+
+            let history_widget = Paragraph::new(history_lines)
+                .scroll((scroll as u16, 0))
+                .block(
+                    Block::default()
+                        .title("Questions + Time")
+                        .borders(Borders::ALL),
+                );
+            frame.render_widget(history_widget, chunks[1]);
+
+            let footer = Paragraph::new("Esc to exit results. Up/Down to scroll.")
+                .block(Block::default().title("Done").borders(Borders::ALL));
+            frame.render_widget(footer, chunks[2]);
+        })?;
+
+        if event::poll(Duration::from_millis(50))? {
+            match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        scroll = scroll.saturating_sub(1);
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        let max_scroll = app.history.len().saturating_sub(1);
+                        scroll = (scroll + 1).min(max_scroll);
+                    }
+                    KeyCode::Esc => return Ok(()),
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+    }
+}
+
+fn format_elapsed(duration: Duration) -> String {
+    format!("{:.2}s", duration.as_secs_f64())
 }
 
 fn run_setup(
