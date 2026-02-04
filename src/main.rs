@@ -183,6 +183,7 @@ impl App {
 enum SetupField {
     AddHigh,
     MulHigh,
+    TimeSeconds,
     Start,
 }
 
@@ -190,7 +191,8 @@ impl SetupField {
     fn next(self) -> Self {
         match self {
             SetupField::AddHigh => SetupField::MulHigh,
-            SetupField::MulHigh => SetupField::Start,
+            SetupField::MulHigh => SetupField::TimeSeconds,
+            SetupField::TimeSeconds => SetupField::Start,
             SetupField::Start => SetupField::AddHigh,
         }
     }
@@ -199,15 +201,25 @@ impl SetupField {
         match self {
             SetupField::AddHigh => SetupField::Start,
             SetupField::MulHigh => SetupField::AddHigh,
-            SetupField::Start => SetupField::MulHigh,
+            SetupField::TimeSeconds => SetupField::MulHigh,
+            SetupField::Start => SetupField::TimeSeconds,
         }
     }
+}
+
+struct SetupConfig {
+    game: GameConfig,
+    duration: Duration,
 }
 
 struct SetupState {
     focus: SetupField,
     add_high_input: String,
+    add_high_edited: bool,
     mul_high_input: String,
+    mul_high_edited: bool,
+    time_input: String,
+    time_edited: bool,
     message: String,
 }
 
@@ -216,20 +228,25 @@ impl SetupState {
         Self {
             focus: SetupField::AddHigh,
             add_high_input: String::from("100"),
+            add_high_edited: false,
             mul_high_input: String::from("12"),
-            message: String::from("Set the two high ends, then start."),
+            mul_high_edited: false,
+            time_input: String::from("120"),
+            time_edited: false,
+            message: String::from("Set ranges and time, then start."),
         }
     }
 
-    fn active_input_mut(&mut self) -> Option<&mut String> {
+    fn active_input_mut(&mut self) -> Option<(&mut String, &mut bool)> {
         match self.focus {
-            SetupField::AddHigh => Some(&mut self.add_high_input),
-            SetupField::MulHigh => Some(&mut self.mul_high_input),
+            SetupField::AddHigh => Some((&mut self.add_high_input, &mut self.add_high_edited)),
+            SetupField::MulHigh => Some((&mut self.mul_high_input, &mut self.mul_high_edited)),
+            SetupField::TimeSeconds => Some((&mut self.time_input, &mut self.time_edited)),
             SetupField::Start => None,
         }
     }
 
-    fn parse_config(&self) -> Result<GameConfig, &'static str> {
+    fn parse_config(&self) -> Result<SetupConfig, &'static str> {
         let add_max = self
             .add_high_input
             .parse::<i32>()
@@ -238,10 +255,20 @@ impl SetupState {
             .mul_high_input
             .parse::<i32>()
             .map_err(|_| "Multiplication high end must be a whole number.")?;
+        let time_seconds = self
+            .time_input
+            .parse::<u64>()
+            .map_err(|_| "Time must be a whole number of seconds.")?;
+        if time_seconds == 0 {
+            return Err("Time must be at least 1 second.");
+        }
 
         let config = GameConfig { add_max, mul_max };
         config.validate()?;
-        Ok(config)
+        Ok(SetupConfig {
+            game: config,
+            duration: Duration::from_secs(time_seconds),
+        })
     }
 }
 
@@ -267,18 +294,18 @@ fn main() -> Result<(), Box<dyn Error>> {
 fn run(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
 ) -> Result<Option<App>, Box<dyn Error>> {
-    let config = match run_setup(terminal)? {
+    let setup = match run_setup(terminal)? {
         Some(config) => config,
         None => return Ok(None),
     };
 
-    let app = run_game(terminal, config, Duration::from_secs(60))?;
+    let app = run_game(terminal, setup.game, setup.duration)?;
     Ok(Some(app))
 }
 
 fn run_setup(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-) -> Result<Option<GameConfig>, Box<dyn Error>> {
+) -> Result<Option<SetupConfig>, Box<dyn Error>> {
     let mut setup = SetupState::new();
 
     loop {
@@ -305,6 +332,11 @@ fn run_setup(
                     "Multiplication range",
                     &format!("{} to {}", MUL_MIN, setup.mul_high_input),
                     setup.focus == SetupField::MulHigh,
+                ),
+                field_line(
+                    "Time (seconds)",
+                    setup.time_input.as_str(),
+                    setup.focus == SetupField::TimeSeconds,
                 ),
                 Line::from(""),
                 start_line(setup.focus == SetupField::Start),
@@ -334,12 +366,17 @@ fn run_setup(
                         setup.focus = setup.focus.next()
                     }
                     KeyCode::Backspace => {
-                        if let Some(input) = setup.active_input_mut() {
+                        if let Some((input, edited)) = setup.active_input_mut() {
                             input.pop();
+                            *edited = true;
                         }
                     }
                     KeyCode::Char(c) if c.is_ascii_digit() => {
-                        if let Some(input) = setup.active_input_mut() {
+                        if let Some((input, edited)) = setup.active_input_mut() {
+                            if !*edited {
+                                input.clear();
+                                *edited = true;
+                            }
                             input.push(c);
                         }
                     }
