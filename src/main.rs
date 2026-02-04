@@ -443,14 +443,19 @@ fn run_game(
             frame.render_widget(header, chunks[0]);
 
             let question = Paragraph::new(app.current.prompt.clone())
-                .block(Block::default().title("Question").borders(Borders::ALL))
-                .alignment(Alignment::Center)
-                .style(Style::default().add_modifier(Modifier::BOLD));
+                .block(
+                    Block::default()
+                        .title("Question")
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(Color::Reset))
+                        .style(Style::default().fg(Color::Reset)),
+                )
+                .alignment(Alignment::Center);
             frame.render_widget(question, chunks[1]);
 
             let input = Paragraph::new(app.input.clone()).block(
                 Block::default()
-                    .title("Answer (auto-submit when correct, Esc to quit)")
+                    .title("Answer (Esc to quit)")
                     .borders(Borders::ALL),
             );
             frame.render_widget(input, chunks[2]);
