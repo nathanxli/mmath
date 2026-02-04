@@ -4,20 +4,26 @@ use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::execute;
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::terminal::{
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
+};
 use rand::Rng;
+use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
-use ratatui::Terminal;
+
+const ADD_MIN: i32 = 2;
+const MUL_MIN: i32 = 2;
 
 #[derive(Clone, Copy)]
 enum Op {
     Add,
     Sub,
     Mul,
+    Div,
 }
 
 struct Question {
@@ -25,47 +31,103 @@ struct Question {
     answer: i32,
 }
 
+#[derive(Clone)]
+struct GameConfig {
+    add_max: i32,
+    mul_max: i32,
+}
+
+impl Default for GameConfig {
+    fn default() -> Self {
+        Self {
+            add_max: 100,
+            mul_max: 12,
+        }
+    }
+}
+
+impl GameConfig {
+    fn validate(&self) -> Result<(), &'static str> {
+        if self.add_max < ADD_MIN {
+            return Err("Addition high end must be at least 2.");
+        }
+        if self.mul_max < MUL_MIN {
+            return Err("Multiplication high end must be at least 2.");
+        }
+        Ok(())
+    }
+}
+
 struct QuestionGenerator {
     rng: rand::rngs::ThreadRng,
+    config: GameConfig,
 }
 
 impl QuestionGenerator {
-    fn new() -> Self {
-        Self { rng: rand::rng() }
+    fn new(config: GameConfig) -> Self {
+        Self {
+            rng: rand::rng(),
+            config,
+        }
     }
 
     fn next(&mut self) -> Question {
-        let op = match self.rng.random_range(0..3) {
+        let op = match self.rng.random_range(0..4) {
             0 => Op::Add,
             1 => Op::Sub,
-            _ => Op::Mul,
+            2 => Op::Mul,
+            _ => Op::Div,
         };
 
-        let (a, b) = match op {
-            Op::Add => (
-                self.rng.random_range(10..100),
-                self.rng.random_range(10..100),
-            ),
-            Op::Sub => {
-                let a = self.rng.random_range(20..100);
-                let b = self.rng.random_range(10..=a);
-                (a, b)
+        match op {
+            Op::Add => {
+                let a = self.rng.random_range(ADD_MIN..=self.config.add_max);
+                let b = self.rng.random_range(ADD_MIN..=self.config.add_max);
+                Question {
+                    prompt: format!("{} + {} = ?", a, b),
+                    answer: a + b,
+                }
             }
-            Op::Mul => (
-                self.rng.random_range(3..13),
-                self.rng.random_range(3..13),
-            ),
-        };
-
-        let (symbol, answer) = match op {
-            Op::Add => ("+", a + b),
-            Op::Sub => ("-", a - b),
-            Op::Mul => ("*", a * b),
-        };
-
-        Question {
-            prompt: format!("{} {} {} = ?", a, symbol, b),
-            answer,
+            Op::Sub => {
+                let a = self.rng.random_range(ADD_MIN..=self.config.add_max);
+                let b = self.rng.random_range(ADD_MIN..=self.config.add_max);
+                let sum = a + b;
+                if self.rng.random_bool(0.5) {
+                    Question {
+                        prompt: format!("{} - {} = ?", sum, a),
+                        answer: b,
+                    }
+                } else {
+                    Question {
+                        prompt: format!("{} - {} = ?", sum, b),
+                        answer: a,
+                    }
+                }
+            }
+            Op::Mul => {
+                let a = self.rng.random_range(MUL_MIN..=self.config.mul_max);
+                let b = self.rng.random_range(MUL_MIN..=self.config.mul_max);
+                Question {
+                    prompt: format!("{} * {} = ?", a, b),
+                    answer: a * b,
+                }
+            }
+            Op::Div => {
+                let a = self.rng.random_range(MUL_MIN..=self.config.mul_max);
+                let b = self.rng.random_range(MUL_MIN..=self.config.mul_max);
+                let product = a * b;
+                if self.rng.random_bool(0.5) {
+                    Question {
+                        prompt: format!("{} / {} = ?", product, a),
+                        answer: b,
+                    }
+                } else {
+                    Question {
+                        prompt: format!("{} / {} = ?", product, b),
+                        answer: a,
+                    }
+                }
+            }
         }
     }
 }
@@ -81,8 +143,8 @@ struct App {
 }
 
 impl App {
-    fn new(duration: Duration) -> Self {
-        let mut generator = QuestionGenerator::new();
+    fn new(config: GameConfig, duration: Duration) -> Self {
+        let mut generator = QuestionGenerator::new(config);
         let current = generator.next();
 
         Self {
@@ -122,13 +184,79 @@ impl App {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SetupField {
+    AddHigh,
+    MulHigh,
+    Start,
+}
+
+impl SetupField {
+    fn next(self) -> Self {
+        match self {
+            SetupField::AddHigh => SetupField::MulHigh,
+            SetupField::MulHigh => SetupField::Start,
+            SetupField::Start => SetupField::AddHigh,
+        }
+    }
+
+    fn prev(self) -> Self {
+        match self {
+            SetupField::AddHigh => SetupField::Start,
+            SetupField::MulHigh => SetupField::AddHigh,
+            SetupField::Start => SetupField::MulHigh,
+        }
+    }
+}
+
+struct SetupState {
+    focus: SetupField,
+    add_high_input: String,
+    mul_high_input: String,
+    message: String,
+}
+
+impl SetupState {
+    fn new() -> Self {
+        Self {
+            focus: SetupField::AddHigh,
+            add_high_input: String::from("100"),
+            mul_high_input: String::from("12"),
+            message: String::from("Set the two high ends, then start."),
+        }
+    }
+
+    fn active_input_mut(&mut self) -> Option<&mut String> {
+        match self.focus {
+            SetupField::AddHigh => Some(&mut self.add_high_input),
+            SetupField::MulHigh => Some(&mut self.mul_high_input),
+            SetupField::Start => None,
+        }
+    }
+
+    fn parse_config(&self) -> Result<GameConfig, &'static str> {
+        let add_max = self
+            .add_high_input
+            .parse::<i32>()
+            .map_err(|_| "Addition high end must be a whole number.")?;
+        let mul_max = self
+            .mul_high_input
+            .parse::<i32>()
+            .map_err(|_| "Multiplication high end must be a whole number.")?;
+
+        let config = GameConfig { add_max, mul_max };
+        config.validate()?;
+        Ok(config)
+    }
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let mut terminal = init_terminal()?;
-    let app_result = run_app(&mut terminal, Duration::from_secs(60));
+    let result = run(&mut terminal);
     restore_terminal(&mut terminal)?;
 
-    match app_result {
-        Ok(app) => {
+    match result {
+        Ok(Some(app)) => {
             println!("Time's up!");
             println!("Score: {}/{}", app.score, app.total_answered);
             if app.total_answered > 0 {
@@ -137,15 +265,158 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             Ok(())
         }
+        Ok(None) => {
+            println!("Canceled.");
+            Ok(())
+        }
         Err(err) => Err(err),
     }
 }
 
-fn run_app(
+fn run(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+) -> Result<Option<App>, Box<dyn Error>> {
+    let config = match run_setup(terminal)? {
+        Some(config) => config,
+        None => return Ok(None),
+    };
+
+    let app = run_game(terminal, config, Duration::from_secs(60))?;
+    Ok(Some(app))
+}
+
+fn run_setup(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+) -> Result<Option<GameConfig>, Box<dyn Error>> {
+    let mut setup = SetupState::new();
+
+    loop {
+        terminal.draw(|frame| {
+            let area = frame.area();
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .margin(1)
+                .constraints([Constraint::Min(10), Constraint::Length(3)])
+                .split(area);
+
+            let lines = vec![
+                Line::from("Four types are enabled: +, -, *, /"),
+                Line::from("Subtraction is reverse addition; division is reverse multiplication."),
+                Line::from("Use Up/Down (or j/k) to move. Type numbers. Backspace deletes."),
+                Line::from("Press Enter on Start (or 's') to begin. Esc cancels."),
+                Line::from(""),
+                field_line(
+                    "Addition range",
+                    &format!("{} to {}", ADD_MIN, setup.add_high_input),
+                    setup.focus == SetupField::AddHigh,
+                ),
+                field_line(
+                    "Multiplication range",
+                    &format!("{} to {}", MUL_MIN, setup.mul_high_input),
+                    setup.focus == SetupField::MulHigh,
+                ),
+                Line::from(""),
+                start_line(setup.focus == SetupField::Start),
+            ];
+
+            let setup_widget = Paragraph::new(lines).block(
+                Block::default()
+                    .title("Mental Math Setup")
+                    .borders(Borders::ALL),
+            );
+            frame.render_widget(setup_widget, chunks[0]);
+
+            let status = Paragraph::new(setup.message.as_str()).block(
+                Block::default()
+                    .title("Status")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::DarkGray)),
+            );
+            frame.render_widget(status, chunks[1]);
+        })?;
+
+        if event::poll(Duration::from_millis(50))? {
+            match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => setup.focus = setup.focus.prev(),
+                    KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab => {
+                        setup.focus = setup.focus.next()
+                    }
+                    KeyCode::Backspace => {
+                        if let Some(input) = setup.active_input_mut() {
+                            input.pop();
+                        }
+                    }
+                    KeyCode::Char(c) if c.is_ascii_digit() => {
+                        if let Some(input) = setup.active_input_mut() {
+                            input.push(c);
+                        }
+                    }
+                    KeyCode::Enter => {
+                        if setup.focus == SetupField::Start {
+                            match setup.parse_config() {
+                                Ok(config) => return Ok(Some(config)),
+                                Err(msg) => setup.message = msg.to_string(),
+                            }
+                        } else {
+                            setup.focus = setup.focus.next();
+                        }
+                    }
+                    KeyCode::Char('s') => match setup.parse_config() {
+                        Ok(config) => return Ok(Some(config)),
+                        Err(msg) => setup.message = msg.to_string(),
+                    },
+                    KeyCode::Esc => return Ok(None),
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+    }
+}
+
+fn field_line(label: &str, value: &str, focused: bool) -> Line<'static> {
+    let label_style = if focused {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    Line::from(vec![
+        Span::styled(format!("{}: ", label), label_style),
+        Span::styled(
+            value.to_string(),
+            if focused {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+            } else {
+                Style::default()
+            },
+        ),
+    ])
+}
+
+fn start_line(focused: bool) -> Line<'static> {
+    let style = if focused {
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
+    } else {
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD)
+    };
+    Line::from(Span::styled("Start", style))
+}
+
+fn run_game(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    config: GameConfig,
     duration: Duration,
 ) -> Result<App, Box<dyn Error>> {
-    let mut app = App::new(duration);
+    let mut app = App::new(config, duration);
 
     while !app.is_done() {
         terminal.draw(|frame| {
@@ -157,7 +428,6 @@ fn run_app(
                     Constraint::Length(3),
                     Constraint::Length(5),
                     Constraint::Length(3),
-                    Constraint::Min(3),
                 ])
                 .split(area);
 
@@ -166,12 +436,16 @@ fn run_app(
                 Span::raw("Time: "),
                 Span::styled(
                     format!("{}s", timer),
-                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw("    Score: "),
                 Span::styled(
                     format!("{}/{}", app.score, app.total_answered),
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
                 ),
             ]))
             .block(Block::default().title("Mental Math").borders(Borders::ALL));
@@ -189,13 +463,6 @@ fn run_app(
                     .borders(Borders::ALL),
             );
             frame.render_widget(input, chunks[2]);
-
-            let help = Paragraph::new(vec![
-                Line::from("Fast mental math drill prototype."),
-                Line::from("Only numeric answers are accepted."),
-            ])
-            .block(Block::default().title("Help").borders(Borders::ALL));
-            frame.render_widget(help, chunks[3]);
         })?;
 
         if event::poll(Duration::from_millis(50))? {
