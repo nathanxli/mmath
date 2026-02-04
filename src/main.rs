@@ -137,7 +137,7 @@ struct App {
     current: Question,
     input: String,
     score: usize,
-    total_answered: usize,
+    solved: usize,
     duration: Duration,
     started_at: Instant,
 }
@@ -152,7 +152,7 @@ impl App {
             current,
             input: String::new(),
             score: 0,
-            total_answered: 0,
+            solved: 0,
             duration,
             started_at: Instant::now(),
         }
@@ -167,20 +167,15 @@ impl App {
         self.remaining().is_zero()
     }
 
-    fn submit(&mut self) {
-        if self.input.trim().is_empty() {
-            return;
-        }
-
+    fn try_advance_if_correct(&mut self) {
         if let Ok(value) = self.input.trim().parse::<i32>() {
-            self.total_answered += 1;
             if value == self.current.answer {
                 self.score += 1;
+                self.solved += 1;
+                self.current = self.generator.next();
+                self.input.clear();
             }
-            self.current = self.generator.next();
         }
-
-        self.input.clear();
     }
 }
 
@@ -258,11 +253,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     match result {
         Ok(Some(app)) => {
             println!("Time's up!");
-            println!("Score: {}/{}", app.score, app.total_answered);
-            if app.total_answered > 0 {
-                let accuracy = (app.score as f64 / app.total_answered as f64) * 100.0;
-                println!("Accuracy: {:.1}%", accuracy);
-            }
+            println!("Solved: {}", app.solved);
             Ok(())
         }
         Ok(None) => {
@@ -442,7 +433,7 @@ fn run_game(
                 ),
                 Span::raw("    Score: "),
                 Span::styled(
-                    format!("{}/{}", app.score, app.total_answered),
+                    format!("{}", app.score),
                     Style::default()
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
@@ -459,7 +450,7 @@ fn run_game(
 
             let input = Paragraph::new(app.input.clone()).block(
                 Block::default()
-                    .title("Answer (Enter to submit, Esc to quit)")
+                    .title("Answer (auto-submit when correct, Esc to quit)")
                     .borders(Borders::ALL),
             );
             frame.render_widget(input, chunks[2]);
@@ -468,13 +459,17 @@ fn run_game(
         if event::poll(Duration::from_millis(50))? {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-                    KeyCode::Char(c) if c.is_ascii_digit() => app.input.push(c),
-                    KeyCode::Char('-') if app.input.is_empty() => app.input.push('-'),
+                    KeyCode::Char(c) if c.is_ascii_digit() => {
+                        app.input.push(c);
+                        app.try_advance_if_correct();
+                    }
+                    KeyCode::Char('-') if app.input.is_empty() => {
+                        app.input.push('-');
+                        app.try_advance_if_correct();
+                    }
                     KeyCode::Backspace => {
                         app.input.pop();
-                    }
-                    KeyCode::Enter => {
-                        app.submit();
+                        app.try_advance_if_correct();
                     }
                     KeyCode::Esc => break,
                     _ => {}
