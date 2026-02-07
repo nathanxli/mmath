@@ -399,7 +399,7 @@ fn run_results(
                 );
             frame.render_widget(history_widget, chunks[1]);
 
-            let footer = Paragraph::new("Esc to exit results. r restart. Up/Down to scroll.")
+            let footer = Paragraph::new("Esc to exit results. 'r' to restart with same parameters. Up/Down to scroll.")
                 .block(Block::default().title("Done").borders(Borders::ALL));
             frame.render_widget(footer, chunks[2]);
         })?;
