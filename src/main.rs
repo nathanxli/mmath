@@ -1,4 +1,5 @@
 use std::error::Error;
+use std::env;
 use std::io;
 use std::time::{Duration, Instant};
 
@@ -10,7 +11,7 @@ use crossterm::terminal::{
 use rand::Rng;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
@@ -291,8 +292,9 @@ impl SetupState {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    let use_small_text = env::args().any(|arg| arg == "-s");
     let mut terminal = init_terminal()?;
-    let result = run(&mut terminal);
+    let result = run(&mut terminal, use_small_text);
     restore_terminal(&mut terminal)?;
 
     match result {
@@ -307,6 +309,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 fn run(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    use_small_text: bool,
 ) -> Result<Option<App>, Box<dyn Error>> {
     let setup = match run_setup(terminal)? {
         Some(config) => config,
@@ -317,7 +320,7 @@ fn run(
     let mut duration = setup.duration;
 
     loop {
-        let app = run_game(terminal, game_config.clone(), duration)?;
+        let app = run_game(terminal, game_config.clone(), duration, use_small_text)?;
         match run_results(terminal, &app)? {
             ResultsAction::Restart => {
                 game_config = app.config.clone();
@@ -569,6 +572,7 @@ fn run_game(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     config: GameConfig,
     duration: Duration,
+    use_small_text: bool,
 ) -> Result<App, Box<dyn Error>> {
     let mut app = App::new(config, duration);
 
@@ -605,21 +609,34 @@ fn run_game(
             .block(Block::default().title("Mental Math").borders(Borders::ALL));
             frame.render_widget(header, chunks[0]);
 
-            let question_block = Block::default()
-                .title("Question")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Reset))
-                .style(Style::default().fg(Color::Reset));
-            let question_inner = question_block.inner(chunks[1]);
-            frame.render_widget(question_block, chunks[1]);
+            if use_small_text {
+                let question = Paragraph::new(app.current.prompt.clone())
+                    .block(
+                        Block::default()
+                            .title("Question")
+                            .borders(Borders::ALL)
+                            .border_style(Style::default().fg(Color::Reset))
+                            .style(Style::default().fg(Color::Reset)),
+                    )
+                    .alignment(Alignment::Center);
+                frame.render_widget(question, chunks[1]);
+            } else {
+                let question_block = Block::default()
+                    .title("Question")
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Reset))
+                    .style(Style::default().fg(Color::Reset));
+                let question_inner = question_block.inner(chunks[1]);
+                frame.render_widget(question_block, chunks[1]);
 
-            let question = BigText::builder()
-                .pixel_size(PixelSize::HalfHeight)
-                .centered()
-                .style(Style::default().add_modifier(Modifier::BOLD))
-                .lines(vec![Line::from(app.current.prompt.clone())])
-                .build();
-            frame.render_widget(question, question_inner);
+                let question = BigText::builder()
+                    .pixel_size(PixelSize::HalfHeight)
+                    .centered()
+                    .style(Style::default().add_modifier(Modifier::BOLD))
+                    .lines(vec![Line::from(app.current.prompt.clone())])
+                    .build();
+                frame.render_widget(question, question_inner);
+            }
 
             let input = Paragraph::new(app.input.clone()).block(
                 Block::default()
