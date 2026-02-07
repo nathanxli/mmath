@@ -312,15 +312,30 @@ fn run(
         None => return Ok(None),
     };
 
-    let app = run_game(terminal, setup.game, setup.duration)?;
-    run_results(terminal, &app)?;
-    Ok(Some(app))
+    let mut game_config = setup.game;
+    let mut duration = setup.duration;
+
+    loop {
+        let app = run_game(terminal, game_config.clone(), duration)?;
+        match run_results(terminal, &app)? {
+            ResultsAction::Restart => {
+                game_config = app.config.clone();
+                duration = app.duration;
+            }
+            ResultsAction::Exit => return Ok(Some(app)),
+        }
+    }
+}
+
+enum ResultsAction {
+    Restart,
+    Exit,
 }
 
 fn run_results(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &App,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<ResultsAction, Box<dyn Error>> {
     let mut scroll: usize = 0;
 
     loop {
@@ -384,7 +399,7 @@ fn run_results(
                 );
             frame.render_widget(history_widget, chunks[1]);
 
-            let footer = Paragraph::new("Esc to exit results. Up/Down to scroll.")
+            let footer = Paragraph::new("Esc to exit results. r restart. Up/Down to scroll.")
                 .block(Block::default().title("Done").borders(Borders::ALL));
             frame.render_widget(footer, chunks[2]);
         })?;
@@ -399,7 +414,8 @@ fn run_results(
                         let max_scroll = app.history.len().saturating_sub(1);
                         scroll = (scroll + 1).min(max_scroll);
                     }
-                    KeyCode::Esc => return Ok(()),
+                    KeyCode::Char('r') | KeyCode::Char('R') => return Ok(ResultsAction::Restart),
+                    KeyCode::Esc => return Ok(ResultsAction::Exit),
                     _ => {}
                 },
                 _ => {}
