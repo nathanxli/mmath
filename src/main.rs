@@ -10,10 +10,11 @@ use crossterm::terminal::{
 use rand::Rng;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout};
+use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
+use tui_big_text::{BigText, PixelSize};
 
 const ADD_MIN: i32 = 2;
 const MUL_MIN: i32 = 2;
@@ -579,7 +580,7 @@ fn run_game(
                 .margin(1)
                 .constraints([
                     Constraint::Length(3),
-                    Constraint::Length(5),
+                    Constraint::Length(6),
                     Constraint::Length(3),
                 ])
                 .split(area);
@@ -604,16 +605,21 @@ fn run_game(
             .block(Block::default().title("Mental Math").borders(Borders::ALL));
             frame.render_widget(header, chunks[0]);
 
-            let question = Paragraph::new(app.current.prompt.clone())
-                .block(
-                    Block::default()
-                        .title("Question")
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::Reset))
-                        .style(Style::default().fg(Color::Reset)),
-                )
-                .alignment(Alignment::Center);
-            frame.render_widget(question, chunks[1]);
+            let question_block = Block::default()
+                .title("Question")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Reset))
+                .style(Style::default().fg(Color::Reset));
+            let question_inner = question_block.inner(chunks[1]);
+            frame.render_widget(question_block, chunks[1]);
+
+            let question = BigText::builder()
+                .pixel_size(PixelSize::HalfHeight)
+                .centered()
+                .style(Style::default().add_modifier(Modifier::BOLD))
+                .lines(vec![Line::from(app.current.prompt.clone())])
+                .build();
+            frame.render_widget(question, question_inner);
 
             let input = Paragraph::new(app.input.clone()).block(
                 Block::default()
