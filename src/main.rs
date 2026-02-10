@@ -406,13 +406,36 @@ fn run_results(
             if app.history.is_empty() {
                 history_lines.push(Line::from("No solved questions."));
             } else {
+                let count = app.history.len() as f64;
+                let mean = app
+                    .history
+                    .iter()
+                    .map(|record| record.elapsed.as_secs_f64())
+                    .sum::<f64>()
+                    / count;
+                let variance = app
+                    .history
+                    .iter()
+                    .map(|record| {
+                        let delta = record.elapsed.as_secs_f64() - mean;
+                        delta * delta
+                    })
+                    .sum::<f64>()
+                    / count;
+                let stdev = variance.sqrt();
+                let threshold = mean + (2.0 * stdev);
+
                 for (idx, record) in app.history.iter().enumerate() {
-                    history_lines.push(Line::from(format!(
-                        "{:>3}. {:<18}  {}",
-                        idx + 1,
-                        record.prompt,
-                        format_elapsed(record.elapsed)
-                    )));
+                    let elapsed = record.elapsed.as_secs_f64();
+                    let time_style = if elapsed > threshold {
+                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    };
+                    history_lines.push(Line::from(vec![
+                        Span::raw(format!("{:>3}. {:<18}  ", idx + 1, record.prompt)),
+                        Span::styled(format_elapsed(record.elapsed), time_style),
+                    ]));
                 }
             }
 
