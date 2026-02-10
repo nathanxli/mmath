@@ -393,6 +393,14 @@ fn run_results(
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(67), Constraint::Percentage(33)])
                 .split(chunks[1]);
+            let left_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(6), Constraint::Length(4)])
+                .split(middle_chunks[0]);
+            let right_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(6), Constraint::Length(4)])
+                .split(middle_chunks[1]);
 
             let mut history_lines = Vec::new();
             if app.history.is_empty() {
@@ -416,7 +424,43 @@ fn run_results(
                         .borders(Borders::ALL)
                         .padding(Padding::left(1)),
                 );
-            frame.render_widget(history_widget, middle_chunks[0]);
+            frame.render_widget(history_widget, left_chunks[0]);
+
+            let question_stats_lines = if app.history.is_empty() {
+                vec![
+                    Line::from("μ: n/a"),
+                    Line::from("σ: n/a"),
+                ]
+            } else {
+                let count = app.history.len() as f64;
+                let mean = app
+                    .history
+                    .iter()
+                    .map(|record| record.elapsed.as_secs_f64())
+                    .sum::<f64>()
+                    / count;
+                let variance = app
+                    .history
+                    .iter()
+                    .map(|record| {
+                        let delta = record.elapsed.as_secs_f64() - mean;
+                        delta * delta
+                    })
+                    .sum::<f64>()
+                    / count;
+                let stdev = variance.sqrt();
+                vec![
+                    Line::from(format!("μ: {:.2}s", mean)),
+                    Line::from(format!("σ: {:.2}s", stdev)),
+                ]
+            };
+            let question_stats_widget = Paragraph::new(question_stats_lines).block(
+                Block::default()
+                    .title("Time per Question")
+                    .borders(Borders::ALL)
+                    .padding(Padding::left(1)),
+            );
+            frame.render_widget(question_stats_widget, left_chunks[1]);
 
             let mut recent_lines = Vec::new();
             if recent_attempts.is_empty() {
@@ -449,7 +493,22 @@ fn run_results(
                         style,
                     )));
                 }
+            }
 
+            let recent_widget = Paragraph::new(recent_lines).block(
+                Block::default()
+                    .title("Session Statistics")
+                    .borders(Borders::ALL)
+                    .padding(Padding::left(1)),
+            );
+            frame.render_widget(recent_widget, right_chunks[0]);
+
+            let session_stats_lines = if recent_attempts.is_empty() {
+                vec![
+                    Line::from("μ: n/a"),
+                    Line::from("σ: n/a"),
+                ]
+            } else {
                 let count = recent_attempts.len() as f64;
                 let mean = recent_attempts
                     .iter()
@@ -465,19 +524,18 @@ fn run_results(
                     .sum::<f64>()
                     / count;
                 let stdev = variance.sqrt();
-
-                recent_lines.push(Line::from(""));
-                recent_lines.push(Line::from(format!("Session Average: {:.2}", mean)));
-                recent_lines.push(Line::from(format!("Session StDev: {:.2}", stdev)));
-            }
-
-            let recent_widget = Paragraph::new(recent_lines).block(
+                vec![
+                    Line::from(format!("μ: {:.2}", mean)),
+                    Line::from(format!("σ: {:.2}", stdev)),
+                ]
+            };
+            let session_stats_widget = Paragraph::new(session_stats_lines).block(
                 Block::default()
-                    .title("Session Statistics")
+                    .title("Session Scores")
                     .borders(Borders::ALL)
                     .padding(Padding::left(1)),
             );
-            frame.render_widget(recent_widget, middle_chunks[1]);
+            frame.render_widget(session_stats_widget, right_chunks[1]);
 
             let footer = Paragraph::new("Esc to exit results. 'r' to restart with same parameters. Up/Down to scroll.")
                 .block(
