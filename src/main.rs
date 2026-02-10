@@ -318,10 +318,21 @@ fn run(
 
     let mut game_config = setup.game;
     let mut duration = setup.duration;
+    let mut recent_attempts: Vec<RecentAttempt> = Vec::new();
 
     loop {
         let app = run_game(terminal, game_config.clone(), duration, use_small_text)?;
-        match run_results(terminal, &app)? {
+        recent_attempts.push(RecentAttempt {
+            score: app.score,
+            add_max: app.config.add_max,
+            mul_max: app.config.mul_max,
+        });
+        if recent_attempts.len() > 10 {
+            let overflow = recent_attempts.len() - 10;
+            recent_attempts.drain(0..overflow);
+        }
+
+        match run_results(terminal, &app, &recent_attempts)? {
             ResultsAction::Restart => {
                 game_config = app.config.clone();
                 duration = app.duration;
@@ -336,9 +347,16 @@ enum ResultsAction {
     Exit,
 }
 
+struct RecentAttempt {
+    score: usize,
+    add_max: i32,
+    mul_max: i32,
+}
+
 fn run_results(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &App,
+    recent_attempts: &[RecentAttempt],
 ) -> Result<ResultsAction, Box<dyn Error>> {
     let mut scroll: usize = 0;
 
@@ -380,6 +398,11 @@ fn run_results(
             );
             frame.render_widget(summary_widget, chunks[0]);
 
+            let middle_chunks = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(67), Constraint::Percentage(33)])
+                .split(chunks[1]);
+
             let mut history_lines = Vec::new();
             if app.history.is_empty() {
                 history_lines.push(Line::from("No solved questions."));
@@ -401,7 +424,34 @@ fn run_results(
                         .title("Questions + Time")
                         .borders(Borders::ALL),
                 );
-            frame.render_widget(history_widget, chunks[1]);
+            frame.render_widget(history_widget, middle_chunks[0]);
+
+            let mut recent_lines = Vec::new();
+            if recent_attempts.is_empty() {
+                recent_lines.push(Line::from("No attempts yet."));
+            } else {
+                for (idx, attempt) in recent_attempts.iter().rev().enumerate() {
+                    if idx > 0 {
+                        recent_lines.push(Line::from(""));
+                    }
+                    recent_lines.push(Line::from(format!("Total score: {}", attempt.score)));
+                    recent_lines.push(Line::from(format!(
+                        "Addition range: {} to {}",
+                        ADD_MIN, attempt.add_max
+                    )));
+                    recent_lines.push(Line::from(format!(
+                        "Multiplication range: {} to {}",
+                        MUL_MIN, attempt.mul_max
+                    )));
+                }
+            }
+
+            let recent_widget = Paragraph::new(recent_lines).block(
+                Block::default()
+                    .title("Recent Attempts")
+                    .borders(Borders::ALL),
+            );
+            frame.render_widget(recent_widget, middle_chunks[1]);
 
             let footer = Paragraph::new("Esc to exit results. 'r' to restart with same parameters. Up/Down to scroll.")
                 .block(Block::default().title("Done").borders(Borders::ALL));
