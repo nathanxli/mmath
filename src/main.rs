@@ -14,7 +14,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Padding, Paragraph};
 use tui_big_text::{BigText, PixelSize};
 
 const ADD_MIN: i32 = 2;
@@ -384,7 +384,8 @@ fn run_results(
             let summary_widget = Paragraph::new(summary).block(
                 Block::default()
                     .title("Session Settings")
-                    .borders(Borders::ALL),
+                    .borders(Borders::ALL)
+                    .padding(Padding::left(1)),
             );
             frame.render_widget(summary_widget, chunks[0]);
 
@@ -412,7 +413,8 @@ fn run_results(
                 .block(
                     Block::default()
                         .title("Questions + Time")
-                        .borders(Borders::ALL),
+                        .borders(Borders::ALL)
+                        .padding(Padding::left(1)),
                 );
             frame.render_widget(history_widget, middle_chunks[0]);
 
@@ -457,12 +459,18 @@ fn run_results(
             let recent_widget = Paragraph::new(recent_lines).block(
                 Block::default()
                     .title("Session Statistics")
-                    .borders(Borders::ALL),
+                    .borders(Borders::ALL)
+                    .padding(Padding::left(1)),
             );
             frame.render_widget(recent_widget, middle_chunks[1]);
 
             let footer = Paragraph::new("Esc to exit results. 'r' to restart with same parameters. Up/Down to scroll.")
-                .block(Block::default().title("Done").borders(Borders::ALL));
+                .block(
+                    Block::default()
+                        .title("Done")
+                        .borders(Borders::ALL)
+                        .padding(Padding::left(1)),
+                );
             frame.render_widget(footer, chunks[2]);
         })?;
 
@@ -532,7 +540,8 @@ fn run_setup(
             let setup_widget = Paragraph::new(lines).block(
                 Block::default()
                     .title("Mental Math Setup")
-                    .borders(Borders::ALL),
+                    .borders(Borders::ALL)
+                    .padding(Padding::left(1)),
             );
             frame.render_widget(setup_widget, chunks[0]);
 
@@ -540,6 +549,7 @@ fn run_setup(
                 Block::default()
                     .title("Status")
                     .borders(Borders::ALL)
+                    .padding(Padding::left(1))
                     .border_style(Style::default().fg(Color::DarkGray)),
             );
             frame.render_widget(status, chunks[1]);
