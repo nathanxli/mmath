@@ -324,8 +324,6 @@ fn run(
         let app = run_game(terminal, game_config.clone(), duration, use_small_text)?;
         recent_attempts.push(RecentAttempt {
             score: app.score,
-            add_max: app.config.add_max,
-            mul_max: app.config.mul_max,
         });
         if recent_attempts.len() > 10 {
             let overflow = recent_attempts.len() - 10;
@@ -349,8 +347,6 @@ enum ResultsAction {
 
 struct RecentAttempt {
     score: usize,
-    add_max: i32,
-    mul_max: i32,
 }
 
 fn run_results(
@@ -374,10 +370,6 @@ fn run_results(
                 .split(area);
 
             let summary = vec![
-                Line::from(Span::styled(
-                    format!("Total score: {}", app.score),
-                    Style::default().add_modifier(Modifier::BOLD),
-                )),
                 Line::from(format!(
                     "Addition range: {} to {}",
                     ADD_MIN, app.config.add_max
@@ -386,14 +378,12 @@ fn run_results(
                     "Multiplication range: {} to {}",
                     MUL_MIN, app.config.mul_max
                 )),
-                Line::from("Subtraction: reverse of addition"),
-                Line::from("Division: reverse of multiplication"),
-                Line::from(format!("Time limit: {} seconds", app.duration.as_secs())),
+                Line::from(format!("Time: {} seconds", app.duration.as_secs())),
             ];
 
             let summary_widget = Paragraph::new(summary).block(
                 Block::default()
-                    .title("Session Summary")
+                    .title("Session Settings")
                     .borders(Borders::ALL),
             );
             frame.render_widget(summary_widget, chunks[0]);
@@ -430,25 +420,43 @@ fn run_results(
             if recent_attempts.is_empty() {
                 recent_lines.push(Line::from("No attempts yet."));
             } else {
+                recent_lines.push(Line::from("Scores:"));
                 for (idx, attempt) in recent_attempts.iter().rev().enumerate() {
-                    if idx > 0 {
-                        recent_lines.push(Line::from(""));
-                    }
-                    recent_lines.push(Line::from(format!("Total score: {}", attempt.score)));
-                    recent_lines.push(Line::from(format!(
-                        "Addition range: {} to {}",
-                        ADD_MIN, attempt.add_max
-                    )));
-                    recent_lines.push(Line::from(format!(
-                        "Multiplication range: {} to {}",
-                        MUL_MIN, attempt.mul_max
+                    let style = if idx == 0 {
+                        Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    };
+                    recent_lines.push(Line::from(Span::styled(
+                        format!("{:>2}. {}", idx + 1, attempt.score),
+                        style,
                     )));
                 }
+
+                let count = recent_attempts.len() as f64;
+                let mean = recent_attempts
+                    .iter()
+                    .map(|attempt| attempt.score as f64)
+                    .sum::<f64>()
+                    / count;
+                let variance = recent_attempts
+                    .iter()
+                    .map(|attempt| {
+                        let delta = attempt.score as f64 - mean;
+                        delta * delta
+                    })
+                    .sum::<f64>()
+                    / count;
+                let stdev = variance.sqrt();
+
+                recent_lines.push(Line::from(""));
+                recent_lines.push(Line::from(format!("Session Average: {:.2}", mean)));
+                recent_lines.push(Line::from(format!("Session StDev: {:.2}", stdev)));
             }
 
             let recent_widget = Paragraph::new(recent_lines).block(
                 Block::default()
-                    .title("Recent Attempts")
+                    .title("Session Statistics")
                     .borders(Borders::ALL),
             );
             frame.render_widget(recent_widget, middle_chunks[1]);
