@@ -423,8 +423,23 @@ fn run_results(
                 recent_lines.push(Line::from("No attempts yet."));
             } else {
                 recent_lines.push(Line::from("Scores:"));
+                let best = recent_attempts
+                    .iter()
+                    .map(|attempt| attempt.score)
+                    .max()
+                    .unwrap_or(0);
+                let worst = recent_attempts
+                    .iter()
+                    .map(|attempt| attempt.score)
+                    .min()
+                    .unwrap_or(0);
+
                 for (idx, attempt) in recent_attempts.iter().rev().enumerate() {
-                    let style = if idx == 0 {
+                    let style = if recent_attempts.len() == 1 || attempt.score == best {
+                        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+                    } else if attempt.score == worst {
+                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+                    } else if idx == 0 {
                         Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD)
                     } else {
                         Style::default()
