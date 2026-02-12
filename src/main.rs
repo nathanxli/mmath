@@ -609,11 +609,9 @@ fn run_setup(
                 .split(area);
 
             let lines = vec![
-                Line::from("Four types are enabled: +, -, *, /"),
-                Line::from("Subtraction is reverse addition; division is reverse multiplication."),
-                Line::from("Use Up/Down (or j/k) to move. Type numbers. Backspace deletes."),
                 Line::from("Press Enter on Start (or 's') to begin. Esc cancels."),
                 Line::from(""),
+                Line::from("Modes: +, -, *, /"),
                 field_line(
                     "Addition range",
                     &format!("{} to {}", ADD_MIN, setup.add_high_input),
@@ -635,7 +633,7 @@ fn run_setup(
 
             let setup_widget = Paragraph::new(lines).block(
                 Block::default()
-                    .title("Mental Math Setup")
+                    .title("Game Parameters")
                     .borders(Borders::ALL)
                     .padding(Padding::left(1)),
             );
