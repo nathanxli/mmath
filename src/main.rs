@@ -43,6 +43,10 @@ struct GameConfig {
     add_max: i32,
     mul_max_left: i32,
     mul_max_right: i32,
+    add_enabled: bool,
+    sub_enabled: bool,
+    mul_enabled: bool,
+    div_enabled: bool,
 }
 
 impl Default for GameConfig {
@@ -51,6 +55,10 @@ impl Default for GameConfig {
             add_max: 100,
             mul_max_left: 12,
             mul_max_right: 12,
+            add_enabled: true,
+            sub_enabled: true,
+            mul_enabled: true,
+            div_enabled: true,
         }
     }
 }
@@ -65,6 +73,9 @@ impl GameConfig {
         }
         if self.mul_max_right < MUL_MIN {
             return Err("Right multiplication high end must be at least 2.");
+        }
+        if !self.add_enabled && !self.sub_enabled && !self.mul_enabled && !self.div_enabled {
+            return Err("At least one mode must be enabled.");
         }
         Ok(())
     }
@@ -84,12 +95,20 @@ impl QuestionGenerator {
     }
 
     fn next(&mut self) -> Question {
-        let op = match self.rng.random_range(0..4) {
-            0 => Op::Add,
-            1 => Op::Sub,
-            2 => Op::Mul,
-            _ => Op::Div,
-        };
+        let mut enabled_ops = Vec::with_capacity(4);
+        if self.config.add_enabled {
+            enabled_ops.push(Op::Add);
+        }
+        if self.config.sub_enabled {
+            enabled_ops.push(Op::Sub);
+        }
+        if self.config.mul_enabled {
+            enabled_ops.push(Op::Mul);
+        }
+        if self.config.div_enabled {
+            enabled_ops.push(Op::Div);
+        }
+        let op = enabled_ops[self.rng.random_range(0..enabled_ops.len())];
 
         match op {
             Op::Add => {
@@ -205,6 +224,10 @@ impl App {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SetupField {
+    AddMode,
+    SubMode,
+    MulMode,
+    DivMode,
     AddHigh,
     MulHighLeft,
     MulHighRight,
@@ -215,17 +238,25 @@ enum SetupField {
 impl SetupField {
     fn next(self) -> Self {
         match self {
+            SetupField::AddMode => SetupField::SubMode,
+            SetupField::SubMode => SetupField::MulMode,
+            SetupField::MulMode => SetupField::DivMode,
+            SetupField::DivMode => SetupField::AddHigh,
             SetupField::AddHigh => SetupField::MulHighLeft,
             SetupField::MulHighLeft => SetupField::MulHighRight,
             SetupField::MulHighRight => SetupField::TimeSeconds,
             SetupField::TimeSeconds => SetupField::Start,
-            SetupField::Start => SetupField::AddHigh,
+            SetupField::Start => SetupField::AddMode,
         }
     }
 
     fn prev(self) -> Self {
         match self {
-            SetupField::AddHigh => SetupField::Start,
+            SetupField::AddMode => SetupField::Start,
+            SetupField::SubMode => SetupField::AddMode,
+            SetupField::MulMode => SetupField::SubMode,
+            SetupField::DivMode => SetupField::MulMode,
+            SetupField::AddHigh => SetupField::DivMode,
             SetupField::MulHighLeft => SetupField::AddHigh,
             SetupField::MulHighRight => SetupField::MulHighLeft,
             SetupField::TimeSeconds => SetupField::MulHighRight,
@@ -241,6 +272,10 @@ struct SetupConfig {
 
 struct SetupState {
     focus: SetupField,
+    add_enabled: bool,
+    sub_enabled: bool,
+    mul_enabled: bool,
+    div_enabled: bool,
     add_high_input: String,
     add_high_edited: bool,
     mul_high_left_input: String,
@@ -255,7 +290,11 @@ struct SetupState {
 impl SetupState {
     fn new() -> Self {
         Self {
-            focus: SetupField::AddHigh,
+            focus: SetupField::AddMode,
+            add_enabled: true,
+            sub_enabled: true,
+            mul_enabled: true,
+            div_enabled: true,
             add_high_input: String::from("100"),
             add_high_edited: false,
             mul_high_left_input: String::from("12"),
@@ -270,6 +309,10 @@ impl SetupState {
 
     fn active_input_mut(&mut self) -> Option<(&mut String, &mut bool)> {
         match self.focus {
+            SetupField::AddMode => None,
+            SetupField::SubMode => None,
+            SetupField::MulMode => None,
+            SetupField::DivMode => None,
             SetupField::AddHigh => Some((&mut self.add_high_input, &mut self.add_high_edited)),
             SetupField::MulHighLeft => {
                 Some((&mut self.mul_high_left_input, &mut self.mul_high_left_edited))
@@ -279,6 +322,28 @@ impl SetupState {
             }
             SetupField::TimeSeconds => Some((&mut self.time_input, &mut self.time_edited)),
             SetupField::Start => None,
+        }
+    }
+
+    fn toggle_focused_mode(&mut self) -> bool {
+        match self.focus {
+            SetupField::AddMode => {
+                self.add_enabled = !self.add_enabled;
+                true
+            }
+            SetupField::SubMode => {
+                self.sub_enabled = !self.sub_enabled;
+                true
+            }
+            SetupField::MulMode => {
+                self.mul_enabled = !self.mul_enabled;
+                true
+            }
+            SetupField::DivMode => {
+                self.div_enabled = !self.div_enabled;
+                true
+            }
+            _ => false,
         }
     }
 
@@ -307,6 +372,10 @@ impl SetupState {
             add_max,
             mul_max_left,
             mul_max_right,
+            add_enabled: self.add_enabled,
+            sub_enabled: self.sub_enabled,
+            mul_enabled: self.mul_enabled,
+            div_enabled: self.div_enabled,
         };
         config.validate()?;
         Ok(SetupConfig {
@@ -635,9 +704,15 @@ fn run_setup(
 
             let lines = vec![
                 Line::from("Press Enter on Start (or 's') to begin. Esc cancels."),
-                Line::from("Up and Down (or 'j' and 'k') to swap between selections."),
+                Line::from("Up/Down (or j/k) to move. Space toggles modes."),
                 Line::from(""),
-                Line::from("Modes: +, -, *, /"),
+                modes_line(
+                    setup.add_enabled,
+                    setup.sub_enabled,
+                    setup.mul_enabled,
+                    setup.div_enabled,
+                    setup.focus,
+                ),
                 field_line(
                     "Addition range",
                     &format!("{} to {}", ADD_MIN, setup.add_high_input),
@@ -680,9 +755,7 @@ fn run_setup(
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
                     KeyCode::Up | KeyCode::Char('k') => setup.focus = setup.focus.prev(),
-                    KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab => {
-                        setup.focus = setup.focus.next()
-                    }
+                    KeyCode::Down | KeyCode::Char('j') => setup.focus = setup.focus.next(),
                     KeyCode::Backspace => {
                         if let Some((input, edited)) = setup.active_input_mut() {
                             input.pop();
@@ -698,14 +771,16 @@ fn run_setup(
                             input.push(c);
                         }
                     }
+                    KeyCode::Char(' ') => {
+                        setup.toggle_focused_mode();
+                    }
                     KeyCode::Enter => {
-                        if setup.focus == SetupField::Start {
+                        if setup.toggle_focused_mode() {
+                        } else if setup.focus == SetupField::Start {
                             match setup.parse_config() {
                                 Ok(config) => return Ok(Some(config)),
                                 Err(msg) => setup.message = msg.to_string(),
                             }
-                        } else {
-                            setup.focus = setup.focus.next();
                         }
                     }
                     KeyCode::Char('s') => match setup.parse_config() {
@@ -742,6 +817,47 @@ fn field_line(label: &str, value: &str, focused: bool) -> Line<'static> {
             },
         ),
     ])
+}
+
+fn modes_line(
+    add_on: bool,
+    sub_on: bool,
+    mul_on: bool,
+    div_on: bool,
+    focused: SetupField,
+) -> Line<'static> {
+    let label_style = if matches!(
+        focused,
+        SetupField::AddMode | SetupField::SubMode | SetupField::MulMode | SetupField::DivMode
+    ) {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    Line::from(vec![
+        Span::styled("Modes: ", label_style),
+        mode_span("+", add_on, focused == SetupField::AddMode),
+        Span::raw("  "),
+        mode_span("-", sub_on, focused == SetupField::SubMode),
+        Span::raw("  "),
+        mode_span("*", mul_on, focused == SetupField::MulMode),
+        Span::raw("  "),
+        mode_span("/", div_on, focused == SetupField::DivMode),
+    ])
+}
+
+fn mode_span(symbol: &str, enabled: bool, focused: bool) -> Span<'static> {
+    let mut style = if enabled {
+        Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+    };
+    if focused {
+        style = style.add_modifier(Modifier::UNDERLINED);
+    }
+    Span::styled(format!("{} [{}]", symbol, if enabled { "on" } else { "off" }), style)
 }
 
 fn multiplication_range_line(
