@@ -41,14 +41,16 @@ struct QuestionRecord {
 #[derive(Clone)]
 struct GameConfig {
     add_max: i32,
-    mul_max: i32,
+    mul_max_left: i32,
+    mul_max_right: i32,
 }
 
 impl Default for GameConfig {
     fn default() -> Self {
         Self {
             add_max: 100,
-            mul_max: 12,
+            mul_max_left: 12,
+            mul_max_right: 12,
         }
     }
 }
@@ -58,8 +60,11 @@ impl GameConfig {
         if self.add_max < ADD_MIN {
             return Err("Addition high end must be at least 2.");
         }
-        if self.mul_max < MUL_MIN {
-            return Err("Multiplication high end must be at least 2.");
+        if self.mul_max_left < MUL_MIN {
+            return Err("Left multiplication high end must be at least 2.");
+        }
+        if self.mul_max_right < MUL_MIN {
+            return Err("Right multiplication high end must be at least 2.");
         }
         Ok(())
     }
@@ -112,16 +117,16 @@ impl QuestionGenerator {
                 }
             }
             Op::Mul => {
-                let a = self.rng.random_range(MUL_MIN..=self.config.mul_max);
-                let b = self.rng.random_range(MUL_MIN..=self.config.mul_max);
+                let a = self.rng.random_range(MUL_MIN..=self.config.mul_max_left);
+                let b = self.rng.random_range(MUL_MIN..=self.config.mul_max_right);
                 Question {
                     prompt: format!("{} * {} = ?", a, b),
                     answer: a * b,
                 }
             }
             Op::Div => {
-                let a = self.rng.random_range(MUL_MIN..=self.config.mul_max);
-                let b = self.rng.random_range(MUL_MIN..=self.config.mul_max);
+                let a = self.rng.random_range(MUL_MIN..=self.config.mul_max_left);
+                let b = self.rng.random_range(MUL_MIN..=self.config.mul_max_right);
                 let product = a * b;
                 if self.rng.random_bool(0.5) {
                     Question {
@@ -201,7 +206,8 @@ impl App {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SetupField {
     AddHigh,
-    MulHigh,
+    MulHighLeft,
+    MulHighRight,
     TimeSeconds,
     Start,
 }
@@ -209,8 +215,9 @@ enum SetupField {
 impl SetupField {
     fn next(self) -> Self {
         match self {
-            SetupField::AddHigh => SetupField::MulHigh,
-            SetupField::MulHigh => SetupField::TimeSeconds,
+            SetupField::AddHigh => SetupField::MulHighLeft,
+            SetupField::MulHighLeft => SetupField::MulHighRight,
+            SetupField::MulHighRight => SetupField::TimeSeconds,
             SetupField::TimeSeconds => SetupField::Start,
             SetupField::Start => SetupField::AddHigh,
         }
@@ -219,8 +226,9 @@ impl SetupField {
     fn prev(self) -> Self {
         match self {
             SetupField::AddHigh => SetupField::Start,
-            SetupField::MulHigh => SetupField::AddHigh,
-            SetupField::TimeSeconds => SetupField::MulHigh,
+            SetupField::MulHighLeft => SetupField::AddHigh,
+            SetupField::MulHighRight => SetupField::MulHighLeft,
+            SetupField::TimeSeconds => SetupField::MulHighRight,
             SetupField::Start => SetupField::TimeSeconds,
         }
     }
@@ -235,8 +243,10 @@ struct SetupState {
     focus: SetupField,
     add_high_input: String,
     add_high_edited: bool,
-    mul_high_input: String,
-    mul_high_edited: bool,
+    mul_high_left_input: String,
+    mul_high_left_edited: bool,
+    mul_high_right_input: String,
+    mul_high_right_edited: bool,
     time_input: String,
     time_edited: bool,
     message: String,
@@ -248,8 +258,10 @@ impl SetupState {
             focus: SetupField::AddHigh,
             add_high_input: String::from("100"),
             add_high_edited: false,
-            mul_high_input: String::from("12"),
-            mul_high_edited: false,
+            mul_high_left_input: String::from("12"),
+            mul_high_left_edited: false,
+            mul_high_right_input: String::from("12"),
+            mul_high_right_edited: false,
             time_input: String::from("120"),
             time_edited: false,
             message: String::from("Set ranges and time, then start."),
@@ -259,7 +271,12 @@ impl SetupState {
     fn active_input_mut(&mut self) -> Option<(&mut String, &mut bool)> {
         match self.focus {
             SetupField::AddHigh => Some((&mut self.add_high_input, &mut self.add_high_edited)),
-            SetupField::MulHigh => Some((&mut self.mul_high_input, &mut self.mul_high_edited)),
+            SetupField::MulHighLeft => {
+                Some((&mut self.mul_high_left_input, &mut self.mul_high_left_edited))
+            }
+            SetupField::MulHighRight => {
+                Some((&mut self.mul_high_right_input, &mut self.mul_high_right_edited))
+            }
             SetupField::TimeSeconds => Some((&mut self.time_input, &mut self.time_edited)),
             SetupField::Start => None,
         }
@@ -270,10 +287,14 @@ impl SetupState {
             .add_high_input
             .parse::<i32>()
             .map_err(|_| "Addition high end must be a whole number.")?;
-        let mul_max = self
-            .mul_high_input
+        let mul_max_left = self
+            .mul_high_left_input
             .parse::<i32>()
-            .map_err(|_| "Multiplication high end must be a whole number.")?;
+            .map_err(|_| "Left multiplication high end must be a whole number.")?;
+        let mul_max_right = self
+            .mul_high_right_input
+            .parse::<i32>()
+            .map_err(|_| "Right multiplication high end must be a whole number.")?;
         let time_seconds = self
             .time_input
             .parse::<u64>()
@@ -282,7 +303,11 @@ impl SetupState {
             return Err("Time must be at least 1 second.");
         }
 
-        let config = GameConfig { add_max, mul_max };
+        let config = GameConfig {
+            add_max,
+            mul_max_left,
+            mul_max_right,
+        };
         config.validate()?;
         Ok(SetupConfig {
             game: config,
@@ -375,8 +400,8 @@ fn run_results(
                     ADD_MIN, app.config.add_max
                 )),
                 Line::from(format!(
-                    "Multiplication range: {} to {}",
-                    MUL_MIN, app.config.mul_max
+                    "Multiplication range: ({} to {}) x ({} to {})",
+                    MUL_MIN, app.config.mul_max_left, MUL_MIN, app.config.mul_max_right
                 )),
                 Line::from(format!("Time: {} seconds", app.duration.as_secs())),
             ];
@@ -610,6 +635,7 @@ fn run_setup(
 
             let lines = vec![
                 Line::from("Press Enter on Start (or 's') to begin. Esc cancels."),
+                Line::from("Up and Down (or 'j' and 'k') to swap between selections."),
                 Line::from(""),
                 Line::from("Modes: +, -, *, /"),
                 field_line(
@@ -617,10 +643,11 @@ fn run_setup(
                     &format!("{} to {}", ADD_MIN, setup.add_high_input),
                     setup.focus == SetupField::AddHigh,
                 ),
-                field_line(
-                    "Multiplication range",
-                    &format!("{} to {}", MUL_MIN, setup.mul_high_input),
-                    setup.focus == SetupField::MulHigh,
+                multiplication_range_line(
+                    setup.mul_high_left_input.as_str(),
+                    setup.mul_high_right_input.as_str(),
+                    setup.focus == SetupField::MulHighLeft,
+                    setup.focus == SetupField::MulHighRight,
                 ),
                 field_line(
                     "Time (seconds)",
@@ -714,6 +741,49 @@ fn field_line(label: &str, value: &str, focused: bool) -> Line<'static> {
                 Style::default()
             },
         ),
+    ])
+}
+
+fn multiplication_range_line(
+    left: &str,
+    right: &str,
+    left_focused: bool,
+    right_focused: bool,
+) -> Line<'static> {
+    let label_focused = left_focused || right_focused;
+    let label_style = if label_focused {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    let focused_style = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
+
+    Line::from(vec![
+        Span::styled("Multiplication range: ", label_style),
+        Span::raw(format!("({} to ", MUL_MIN)),
+        Span::styled(
+            left.to_string(),
+            if left_focused {
+                focused_style
+            } else {
+                Style::default()
+            },
+        ),
+        Span::raw(") x ("),
+        Span::raw(format!("{} to ", MUL_MIN)),
+        Span::styled(
+            right.to_string(),
+            if right_focused {
+                focused_style
+            } else {
+                Style::default()
+            },
+        ),
+        Span::raw(")"),
     ])
 }
 
