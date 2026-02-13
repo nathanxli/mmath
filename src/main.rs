@@ -54,7 +54,7 @@ impl Default for GameConfig {
         Self {
             add_max: 100,
             mul_max_left: 12,
-            mul_max_right: 12,
+            mul_max_right: 100,
             add_enabled: true,
             sub_enabled: true,
             mul_enabled: true,
@@ -299,7 +299,7 @@ impl SetupState {
             add_high_edited: false,
             mul_high_left_input: String::from("12"),
             mul_high_left_edited: false,
-            mul_high_right_input: String::from("12"),
+            mul_high_right_input: String::from("100"),
             mul_high_right_edited: false,
             time_input: String::from("120"),
             time_edited: false,
