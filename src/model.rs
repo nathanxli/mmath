@@ -5,6 +5,25 @@ use rand::Rng;
 pub const ADD_MIN: i32 = 2;
 pub const MUL_MIN: i32 = 2;
 
+const SKEW_GAMMA: f64 = 1.3;
+
+/// Draw an integer in [min, max] with a mild symmetric bias toward the extremes
+/// (U-shaped). SKEW_GAMMA = 1.0 is uniform; > 1.0 lifts the tails. Used only for
+/// addition/subtraction operands, whose sum is otherwise triangular so extreme
+/// results are rare.
+fn skewed_range<R: Rng>(rng: &mut R, min: i32, max: i32) -> i32 {
+    if min >= max {
+        return min;
+    }
+    let u: f64 = rng.random();
+    let v = if u < 0.5 {
+        0.5 * (2.0 * u).powf(SKEW_GAMMA)
+    } else {
+        1.0 - 0.5 * (2.0 * (1.0 - u)).powf(SKEW_GAMMA)
+    };
+    min + (v * (max - min) as f64).round() as i32
+}
+
 #[derive(Clone, Copy)]
 enum Op {
     Add,
@@ -97,16 +116,16 @@ impl QuestionGenerator {
 
         match op {
             Op::Add => {
-                let a = self.rng.random_range(ADD_MIN..=self.config.add_max);
-                let b = self.rng.random_range(ADD_MIN..=self.config.add_max);
+                let a = skewed_range(&mut self.rng, ADD_MIN, self.config.add_max);
+                let b = skewed_range(&mut self.rng, ADD_MIN, self.config.add_max);
                 Question {
                     prompt: format!("{} + {} = ?", a, b),
                     answer: a + b,
                 }
             }
             Op::Sub => {
-                let a = self.rng.random_range(ADD_MIN..=self.config.add_max);
-                let b = self.rng.random_range(ADD_MIN..=self.config.add_max);
+                let a = skewed_range(&mut self.rng, ADD_MIN, self.config.add_max);
+                let b = skewed_range(&mut self.rng, ADD_MIN, self.config.add_max);
                 let sum = a + b;
                 if self.rng.random_bool(0.5) {
                     Question {
@@ -209,5 +228,39 @@ impl App {
                 self.input.clear();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skewed_range_stays_in_bounds() {
+        let mut rng = rand::rng();
+        for _ in 0..100_000 {
+            let v = skewed_range(&mut rng, ADD_MIN, 100);
+            assert!((ADD_MIN..=100).contains(&v), "out of bounds: {}", v);
+        }
+    }
+
+    #[test]
+    fn skewed_range_boosts_extremes() {
+        let mut rng = rand::rng();
+        let (min, max) = (ADD_MIN, 100);
+        let span = (max - min) as f64;
+        let n = 200_000;
+        let mut extreme = 0;
+        for _ in 0..n {
+            let v = skewed_range(&mut rng, min, max);
+            let frac = (v - min) as f64 / span;
+            if frac <= 0.1 || frac >= 0.9 {
+                extreme += 1;
+            }
+        }
+        // A uniform draw lands in the outer 20% of the range ~20% of the time.
+        // With SKEW_GAMMA > 1 the tails are lifted, so expect clearly more.
+        let ratio = extreme as f64 / n as f64;
+        assert!(ratio > 0.24, "expected boosted tails, got {}", ratio);
     }
 }
