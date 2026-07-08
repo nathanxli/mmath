@@ -123,8 +123,13 @@ impl QuestionGenerator {
             Op::Mul => {
                 let a = self.rng.random_range(MUL_MIN..=self.config.mul_max_left);
                 let b = self.rng.random_range(MUL_MIN..=self.config.mul_max_right);
+                let (left, right) = if self.rng.random_bool(0.5) {
+                    (a, b)
+                } else {
+                    (b, a)
+                };
                 Question {
-                    prompt: format!("{} * {} = ?", a, b),
+                    prompt: format!("{} * {} = ?", left, right),
                     answer: a * b,
                 }
             }
