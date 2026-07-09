@@ -1,6 +1,6 @@
 use std::error::Error;
 use std::io;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use ratatui::Terminal;
@@ -12,7 +12,7 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use tui_big_text::{BigText, PixelSize};
 
 use crate::model::{App, GameConfig};
-use crate::voice::VoiceEngine;
+use crate::voice::{VoiceEngine, VoiceEvent};
 
 pub fn run_game(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
@@ -20,10 +20,13 @@ pub fn run_game(
     duration: Duration,
     use_small_text: bool,
     voice: Option<&VoiceEngine>,
-    voice_check: bool,
 ) -> Result<App, Box<dyn Error>> {
     let mut app = App::new(config, duration);
     let mut voice_latencies: Vec<Duration> = Vec::new();
+    // A voice answer that advanced a question, awaiting its latency report
+    // (which arrives once the utterance finalizes): value, when it was
+    // applied, and the history index it advanced.
+    let mut pending_latency: Option<(i32, Instant, usize)> = None;
 
     // Discard any recognition results left over from a previous round.
     if let Some(engine) = voice {
@@ -64,18 +67,16 @@ pub fn run_game(
                         .add_modifier(Modifier::BOLD),
                 ),
             ];
-            if voice_check {
-                if let Some(last) = voice_latencies.last() {
-                    let avg = voice_latencies.iter().sum::<Duration>().as_millis()
-                        / voice_latencies.len() as u128;
-                    header_spans.push(Span::raw("    Voice: "));
-                    header_spans.push(Span::styled(
-                        format!("{}ms (avg {}ms)", last.as_millis(), avg),
-                        Style::default()
-                            .fg(Color::Magenta)
-                            .add_modifier(Modifier::BOLD),
-                    ));
-                }
+            if let Some(last) = voice_latencies.last() {
+                let avg = voice_latencies.iter().sum::<Duration>().as_millis()
+                    / voice_latencies.len() as u128;
+                header_spans.push(Span::raw("    Voice: "));
+                header_spans.push(Span::styled(
+                    format!("{}ms (avg {}ms)", last.as_millis(), avg),
+                    Style::default()
+                        .fg(Color::Magenta)
+                        .add_modifier(Modifier::BOLD),
+                ));
             }
             let header = Paragraph::new(Line::from(header_spans))
                 .block(Block::default().title("Mental Math").borders(Borders::ALL));
@@ -145,14 +146,30 @@ pub fn run_game(
 
         if let Some(engine) = voice {
             while let Ok(event) = engine.events.try_recv() {
-                app.input = event.value.to_string();
-                let score_before = app.score;
-                app.try_advance_if_correct();
-                if voice_check && app.score > score_before {
-                    let latency = event.spoke_at.elapsed();
-                    voice_latencies.push(latency);
-                    if let Some(record) = app.history.last_mut() {
-                        record.voice_latency = Some(latency);
+                match event {
+                    VoiceEvent::Answer { value } => {
+                        app.input = value.to_string();
+                        let score_before = app.score;
+                        app.try_advance_if_correct();
+                        if app.score > score_before {
+                            pending_latency =
+                                Some((value, Instant::now(), app.history.len() - 1));
+                        }
+                    }
+                    VoiceEvent::Latency {
+                        value,
+                        speech_ended_at,
+                    } => {
+                        if let Some((pending_value, applied_at, idx)) = pending_latency.take() {
+                            if pending_value == value {
+                                let latency =
+                                    applied_at.saturating_duration_since(speech_ended_at);
+                                voice_latencies.push(latency);
+                                if let Some(record) = app.history.get_mut(idx) {
+                                    record.voice_latency = Some(latency);
+                                }
+                            }
+                        }
                     }
                 }
             }

@@ -25,10 +25,9 @@ use crate::voice::VoiceEngine;
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
     let use_small_text = args.iter().any(|arg| arg == "-s");
-    let voice_check = args.iter().any(|arg| arg == "--voice-check");
-    let voice_default = voice_check || args.iter().any(|arg| arg == "-v" || arg == "--voice");
+    let voice_default = args.iter().any(|arg| arg == "-v" || arg == "--voice");
     let mut terminal = init_terminal()?;
-    let result = run(&mut terminal, use_small_text, voice_default, voice_check);
+    let result = run(&mut terminal, use_small_text, voice_default);
     restore_terminal(&mut terminal)?;
 
     match result {
@@ -45,7 +44,6 @@ fn run(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     use_small_text: bool,
     voice_default: bool,
-    voice_check: bool,
 ) -> Result<Option<App>, Box<dyn Error>> {
     let setup = match run_setup(terminal, voice_default)? {
         Some(config) => config,
@@ -75,7 +73,6 @@ fn run(
             duration,
             use_small_text,
             voice.as_ref(),
-            voice_check,
         )?;
         recent_attempts.push(RecentAttempt {
             score: app.score,

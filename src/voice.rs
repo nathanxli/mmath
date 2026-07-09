@@ -2,17 +2,13 @@ use std::env;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use vosk::{CompleteResult, DecodingState, Model, Recognizer};
+use vosk::{CompleteResult, DecodingState, Model, Recognizer, Word};
 
 /// Vosk wants 16 kHz mono i16 audio.
 const TARGET_SAMPLE_RATE: f64 = 16000.0;
-
-/// RMS level (on i16 samples) above which a chunk counts as speech. Used only
-/// to timestamp utterance start for latency reporting.
-const SPEECH_RMS_THRESHOLD: f64 = 300.0;
 
 /// Words the recognizer is allowed to hear. Constraining the grammar to number
 /// words is what makes recognition fast and accurate for this domain.
@@ -21,11 +17,16 @@ const GRAMMAR: &str = "zero oh one two three four five six seven eight nine ten 
     twenty thirty forty fifty sixty seventy eighty ninety hundred thousand \
     minus negative";
 
-/// A number recognized from speech. `spoke_at` is when the utterance started
-/// (energy first crossed the speech threshold), for latency measurement.
-pub struct VoiceEvent {
-    pub value: i32,
-    pub spoke_at: Instant,
+pub enum VoiceEvent {
+    /// A number recognized (from a streaming partial or a final result) --
+    /// apply it as the current answer immediately.
+    Answer { value: i32 },
+    /// Sent once the utterance finalizes: the decoder-derived instant the
+    /// user finished saying `value`, for retroactive latency measurement.
+    /// (Word timestamps are only available on final results when using a
+    /// grammar-constrained recognizer -- enabling them on partials silences
+    /// partial output entirely in libvosk 0.3.42.)
+    Latency { value: i32, speech_ended_at: Instant },
 }
 
 pub struct VoiceEngine {
@@ -47,6 +48,10 @@ impl VoiceEngine {
         let mut recognizer =
             Recognizer::new_with_grammar(&model, TARGET_SAMPLE_RATE as f32, &[GRAMMAR, "[unk]"])
                 .ok_or("failed to create Vosk recognizer")?;
+        // Word-level timestamps on final results let us pin end-of-speech
+        // precisely. Do NOT enable set_partial_words: with a grammar it
+        // suppresses partial output altogether (libvosk 0.3.42).
+        recognizer.set_words(true);
 
         let host = cpal::default_host();
         let device = host
@@ -103,7 +108,7 @@ impl VoiceEngine {
         thread::spawn(move || {
             let mut resampler = Resampler::new(input_rate, TARGET_SAMPLE_RATE);
             let mut pcm: Vec<i16> = Vec::new();
-            let mut utterance_start: Option<Instant> = None;
+            let mut samples_fed: u64 = 0;
             let mut last_partial = String::new();
             let mut last_sent: Option<i32> = None;
 
@@ -113,29 +118,39 @@ impl VoiceEngine {
                 if pcm.is_empty() {
                     continue;
                 }
-
-                if utterance_start.is_none() && rms(&pcm) > SPEECH_RMS_THRESHOLD {
-                    utterance_start = Some(Instant::now());
-                }
+                samples_fed += pcm.len() as u64;
 
                 match recognizer.accept_waveform(&pcm) {
                     Ok(DecodingState::Finalized) => {
-                        // Endpoint (trailing silence): flush the final result
-                        // and reset per-utterance state for the next answer.
+                        // Endpoint (trailing silence): flush the final result,
+                        // report the utterance's end-of-speech time, and reset
+                        // per-utterance state for the next answer.
                         if let CompleteResult::Single(res) = recognizer.result() {
-                            emit(res.text, &mut last_sent, utterance_start, &event_tx);
+                            if let Some(value) = parse_answer(res.text) {
+                                if last_sent != Some(value) {
+                                    let _ = event_tx.send(VoiceEvent::Answer { value });
+                                }
+                                let _ = event_tx.send(VoiceEvent::Latency {
+                                    value,
+                                    speech_ended_at: speech_end_instant(&res.result, samples_fed),
+                                });
+                            }
                         }
-                        utterance_start = None;
                         last_sent = None;
                         last_partial.clear();
                     }
                     Ok(DecodingState::Running) => {
                         // Match on partials while the user is still speaking --
                         // waiting for the final result would add 300-500ms.
-                        let partial = recognizer.partial_result().partial.to_string();
-                        if partial != last_partial {
-                            emit(&partial, &mut last_sent, utterance_start, &event_tx);
-                            last_partial = partial;
+                        let partial = recognizer.partial_result();
+                        if partial.partial != last_partial {
+                            if let Some(value) = parse_answer(partial.partial) {
+                                if last_sent != Some(value) {
+                                    last_sent = Some(value);
+                                    let _ = event_tx.send(VoiceEvent::Answer { value });
+                                }
+                            }
+                            last_partial = partial.partial.to_string();
                         }
                     }
                     _ => {}
@@ -159,21 +174,25 @@ fn send_mono(data: &[f32], channels: usize, tx: &Sender<Vec<f32>>) {
     let _ = tx.send(mono);
 }
 
-fn emit(text: &str, last_sent: &mut Option<i32>, spoke_at: Option<Instant>, tx: &Sender<VoiceEvent>) {
-    if let Some(value) = parse_answer(text) {
-        if *last_sent != Some(value) {
-            *last_sent = Some(value);
-            let _ = tx.send(VoiceEvent {
-                value,
-                spoke_at: spoke_at.unwrap_or_else(Instant::now),
-            });
+/// Decoder-authoritative end-of-speech instant: the end timestamp of the last
+/// number word, mapped from audio-stream time to wall clock. Vosk word times
+/// are stream-absolute seconds, and "now" corresponds to stream position
+/// `samples_fed / 16000`, so end-of-speech was `stream_secs - word_end` ago.
+fn speech_end_instant(words: &[Word], samples_fed: u64) -> Instant {
+    let now = Instant::now();
+    let stream_secs = samples_fed as f64 / TARGET_SAMPLE_RATE;
+    let last_number_end = words
+        .iter()
+        .rev()
+        .find(|w| is_number_word(w.word))
+        .map(|w| w.end as f64);
+    match last_number_end {
+        // Guard against nonsense timestamps; fall back to "now" (latency 0).
+        Some(end) if (0.0..=10.0).contains(&(stream_secs - end)) => {
+            now - Duration::from_secs_f64(stream_secs - end)
         }
+        _ => now,
     }
-}
-
-fn rms(samples: &[i16]) -> f64 {
-    let sum: f64 = samples.iter().map(|&s| (s as f64) * (s as f64)).sum();
-    (sum / samples.len() as f64).sqrt()
 }
 
 fn find_model() -> Result<PathBuf, String> {
@@ -429,6 +448,16 @@ fn parse_standard(words: &[&str]) -> Option<i64> {
 mod tests {
     use super::*;
 
+    /// RMS level (on i16 samples) above which a chunk counts as speech.
+    /// Only used by the latency probe as a sanity reference against the
+    /// decoder's word-end timestamps.
+    const SPEECH_RMS_THRESHOLD: f64 = 300.0;
+
+    fn rms(samples: &[i16]) -> f64 {
+        let sum: f64 = samples.iter().map(|&s| (s as f64) * (s as f64)).sum();
+        (sum / samples.len() as f64).sqrt()
+    }
+
     #[test]
     fn parses_standard_numbers() {
         assert_eq!(parse_answer("zero"), Some(0));
@@ -553,40 +582,73 @@ mod tests {
         vosk::set_log_level(vosk::LogLevel::Error);
         let model = Model::new(model_path.to_string_lossy()).unwrap();
         let mut rec = Recognizer::new_with_grammar(&model, 16000.0, &[GRAMMAR, "[unk]"]).unwrap();
+        rec.set_words(true);
 
         const CHUNK: usize = 320; // 20ms at 16kHz
+        let mut samples_fed: u64 = 0;
         let mut speech_end_chunk = 0;
         let mut match_chunk = None;
+        let mut latency_ms = None;
         let mut last_partial = String::new();
         let mut max_compute = std::time::Duration::ZERO;
         for (i, chunk) in samples.chunks(CHUNK).enumerate() {
             if rms(chunk) > SPEECH_RMS_THRESHOLD {
                 speech_end_chunk = i;
             }
+            samples_fed += chunk.len() as u64;
             let t = Instant::now();
             let state = rec.accept_waveform(chunk).unwrap();
-            if state == DecodingState::Running {
-                let partial = rec.partial_result().partial.to_string();
-                if partial != last_partial {
-                    println!("chunk {:3}: partial {:?}", i, partial);
-                    last_partial = partial;
+            match state {
+                DecodingState::Running => {
+                    let partial = rec.partial_result().partial.to_string();
+                    if partial != last_partial {
+                        println!("chunk {:3}: partial {:?}", i, partial);
+                        last_partial = partial;
+                    }
+                    if match_chunk.is_none() && parse_answer(&last_partial) == Some(42) {
+                        match_chunk = Some(samples_fed);
+                    }
                 }
-                if match_chunk.is_none() && parse_answer(&last_partial) == Some(42) {
-                    match_chunk = Some(i);
+                DecodingState::Finalized => {
+                    // Retroactive latency, exactly as the runtime computes it:
+                    // when the match was applied minus the decoder's word-end.
+                    if let (CompleteResult::Single(res), Some(match_samples)) =
+                        (rec.result(), match_chunk)
+                    {
+                        let end = res
+                            .result
+                            .iter()
+                            .rev()
+                            .find(|w| is_number_word(w.word))
+                            .map(|w| w.end as f64)
+                            .expect("final result had no word timestamps");
+                        latency_ms =
+                            Some((match_samples as f64 / 16000.0 - end) * 1000.0);
+                    }
                 }
-            } else {
-                println!("chunk {:3}: state {:?}", i, state);
+                _ => {}
             }
             max_compute = max_compute.max(t.elapsed());
         }
 
-        let match_chunk = match_chunk.expect("never matched 42 from partials");
+        let match_samples = match_chunk.expect("never matched 42 from partials");
+        let latency_ms = latency_ms.expect("utterance never finalized");
         println!(
-            "speech ends at chunk {}, first partial match at chunk {} ({}ms relative to speech end)",
-            speech_end_chunk,
-            match_chunk,
-            (match_chunk as i64 - speech_end_chunk as i64) * 20,
+            "RMS speech end ~{:.2}s, partial match at {:.2}s stream time",
+            speech_end_chunk as f64 * 0.02,
+            match_samples as f64 / 16000.0,
+        );
+        println!(
+            "decoder word-end latency: {:.0}ms (end of last word -> match applied)",
+            latency_ms
         );
         println!("max per-chunk compute: {:?}", max_compute);
+        // A large or negative value means the stream-time mapping is wrong
+        // (e.g. timestamps are not stream-absolute).
+        assert!(
+            (0.0..=500.0).contains(&latency_ms),
+            "implausible word-end latency: {:.0}ms",
+            latency_ms
+        );
     }
 }

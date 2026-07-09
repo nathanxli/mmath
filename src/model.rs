@@ -40,8 +40,8 @@ pub struct Question {
 pub struct QuestionRecord {
     pub prompt: String,
     pub elapsed: Duration,
-    /// Speech-start-to-answer latency, recorded only for voice answers in
-    /// --voice-check mode.
+    /// End-of-speech-to-answer latency (recognition + input pipeline),
+    /// recorded for voice answers.
     pub voice_latency: Option<Duration>,
 }
 

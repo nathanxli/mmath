@@ -72,9 +72,14 @@ macOS will ask for microphone permission on first use.
 Toggle "Voice input" in the start menu, or pre-enable it from the CLI:
 
 ```bash
-mmath -v            # or --voice
-mmath --voice-check # voice on + show per-answer latency (speech start -> answer typed)
+mmath -v   # or --voice
 ```
+
+With voice on, each answer's recognition latency (end of speech -> answer
+typed, pinned by the decoder's word-end timestamps) is shown live in the
+header and per question on the results page, along with an adjusted solve
+time (total time minus recognition latency, i.e. time until you finished
+speaking -- the analog of a typed answer's final keystroke).
 
 Both spoken styles work: "one hundred twenty three" and digit-by-digit
 "one two three". Keyboard input stays active alongside voice. Pause briefly
