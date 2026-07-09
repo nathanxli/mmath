@@ -22,6 +22,7 @@ enum SetupField {
     MulHighLeft,
     MulHighRight,
     TimeSeconds,
+    LargeText,
     Voice,
     MultChoice,
     WrongPenalty,
@@ -38,7 +39,8 @@ impl SetupField {
             SetupField::AddHigh => SetupField::MulHighLeft,
             SetupField::MulHighLeft => SetupField::MulHighRight,
             SetupField::MulHighRight => SetupField::TimeSeconds,
-            SetupField::TimeSeconds => SetupField::Voice,
+            SetupField::TimeSeconds => SetupField::LargeText,
+            SetupField::LargeText => SetupField::Voice,
             SetupField::Voice => SetupField::MultChoice,
             SetupField::MultChoice => SetupField::WrongPenalty,
             SetupField::WrongPenalty => SetupField::Start,
@@ -56,7 +58,8 @@ impl SetupField {
             SetupField::MulHighLeft => SetupField::AddHigh,
             SetupField::MulHighRight => SetupField::MulHighLeft,
             SetupField::TimeSeconds => SetupField::MulHighRight,
-            SetupField::Voice => SetupField::TimeSeconds,
+            SetupField::LargeText => SetupField::TimeSeconds,
+            SetupField::Voice => SetupField::LargeText,
             SetupField::MultChoice => SetupField::Voice,
             SetupField::WrongPenalty => SetupField::MultChoice,
             SetupField::Start => SetupField::WrongPenalty,
@@ -70,6 +73,7 @@ pub struct SetupConfig {
     pub voice_enabled: bool,
     pub mult_choice: bool,
     pub wrong_penalty: i32,
+    pub large_text: bool,
 }
 
 struct SetupState {
@@ -89,11 +93,12 @@ struct SetupState {
     voice_enabled: bool,
     mult_choice: bool,
     penalize_wrong: bool,
+    large_text: bool,
     message: String,
 }
 
 impl SetupState {
-    fn new(voice_default: bool, mult_choice_default: bool) -> Self {
+    fn new(voice_default: bool, mult_choice_default: bool, large_text_default: bool) -> Self {
         Self {
             focus: SetupField::AddMode,
             add_enabled: true,
@@ -113,6 +118,7 @@ impl SetupState {
             voice_enabled: voice_default && !mult_choice_default,
             mult_choice: mult_choice_default,
             penalize_wrong: false,
+            large_text: large_text_default,
             message: String::from("Set ranges and time, then start."),
         }
     }
@@ -131,6 +137,7 @@ impl SetupState {
                 Some((&mut self.mul_high_right_input, &mut self.mul_high_right_edited))
             }
             SetupField::TimeSeconds => Some((&mut self.time_input, &mut self.time_edited)),
+            SetupField::LargeText => None,
             SetupField::Voice => None,
             SetupField::MultChoice => None,
             SetupField::WrongPenalty => None,
@@ -154,6 +161,10 @@ impl SetupState {
             }
             SetupField::DivMode => {
                 self.div_enabled = !self.div_enabled;
+                true
+            }
+            SetupField::LargeText => {
+                self.large_text = !self.large_text;
                 true
             }
             SetupField::Voice => {
@@ -215,6 +226,7 @@ impl SetupState {
             voice_enabled: self.voice_enabled,
             mult_choice: self.mult_choice,
             wrong_penalty: if self.penalize_wrong { -1 } else { 0 },
+            large_text: self.large_text,
         })
     }
 }
@@ -223,8 +235,9 @@ pub fn run_setup(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     voice_default: bool,
     mult_choice_default: bool,
+    large_text_default: bool,
 ) -> Result<Option<SetupConfig>, Box<dyn Error>> {
-    let mut setup = SetupState::new(voice_default, mult_choice_default);
+    let mut setup = SetupState::new(voice_default, mult_choice_default, large_text_default);
 
     loop {
         terminal.draw(|frame| {
@@ -262,6 +275,7 @@ pub fn run_setup(
                     setup.time_input.as_str(),
                     setup.focus == SetupField::TimeSeconds,
                 ),
+                large_text_line(setup.large_text, setup.focus == SetupField::LargeText),
                 voice_line(setup.voice_enabled, setup.focus == SetupField::Voice),
                 mult_choice_line(setup.mult_choice, setup.focus == SetupField::MultChoice),
                 penalty_line(
@@ -443,6 +457,20 @@ fn multiplication_range_line(
     ])
 }
 
+fn large_text_line(enabled: bool, focused: bool) -> Line<'static> {
+    let label_style = if focused {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    Line::from(vec![
+        Span::styled("Large text:", label_style),
+        mode_span("", enabled, focused),
+    ])
+}
+
 fn voice_line(enabled: bool, focused: bool) -> Line<'static> {
     let label_style = if focused {
         Style::default()
@@ -452,8 +480,8 @@ fn voice_line(enabled: bool, focused: bool) -> Line<'static> {
         Style::default()
     };
     Line::from(vec![
-        Span::styled("Voice input: ", label_style),
-        mode_span("mic", enabled, focused),
+        Span::styled("Voice input:", label_style),
+        mode_span("", enabled, focused),
     ])
 }
 
@@ -466,8 +494,8 @@ fn mult_choice_line(enabled: bool, focused: bool) -> Line<'static> {
         Style::default()
     };
     Line::from(vec![
-        Span::styled("Multiple choice: ", label_style),
-        mode_span("2x2", enabled, focused),
+        Span::styled("Multiple choice:", label_style),
+        mode_span("", enabled, focused),
     ])
 }
 

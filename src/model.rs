@@ -242,8 +242,6 @@ pub struct App {
     started_at: Instant,
     pub mult_choice: bool,
     pub wrong_penalty: i32,
-    /// Highlighted cell in the multiple-choice grid (0=TL, 1=TR, 2=BL, 3=BR).
-    pub selected: usize,
 }
 
 impl App {
@@ -269,7 +267,6 @@ impl App {
             started_at: Instant::now(),
             mult_choice,
             wrong_penalty,
-            selected: 0,
         }
     }
 
@@ -322,7 +319,6 @@ impl App {
         }
         self.current = self.generator.next();
         self.question_started_at = Instant::now();
-        self.selected = 0;
     }
 }
 

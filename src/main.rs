@@ -25,11 +25,12 @@ use crate::voice::VoiceEngine;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
-    let use_small_text = args.iter().any(|arg| arg == "-s");
+    // -s presets the "Large text" setup toggle to off.
+    let large_text_default = !args.iter().any(|arg| arg == "-s");
     let voice_default = args.iter().any(|arg| arg == "-v" || arg == "--voice");
     let mult_choice_default = args.iter().any(|arg| arg == "-m" || arg == "--mult-choice");
     let mut terminal = init_terminal()?;
-    let result = run(&mut terminal, use_small_text, voice_default, mult_choice_default);
+    let result = run(&mut terminal, large_text_default, voice_default, mult_choice_default);
     restore_terminal(&mut terminal)?;
 
     match result {
@@ -44,11 +45,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 fn run(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    use_small_text: bool,
+    large_text_default: bool,
     voice_default: bool,
     mult_choice_default: bool,
 ) -> Result<Option<App>, Box<dyn Error>> {
-    let setup = match run_setup(terminal, voice_default, mult_choice_default)? {
+    let setup = match run_setup(terminal, voice_default, mult_choice_default, large_text_default)? {
         Some(config) => config,
         None => return Ok(None),
     };
@@ -69,6 +70,7 @@ fn run(
     let mut duration = setup.duration;
     let mult_choice = setup.mult_choice;
     let wrong_penalty = setup.wrong_penalty;
+    let use_small_text = !setup.large_text;
     let mut recent_attempts: Vec<RecentAttempt> = Vec::new();
 
     loop {

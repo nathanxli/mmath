@@ -59,7 +59,7 @@ pub fn run_game(
                 .constraints([
                     Constraint::Length(3),
                     Constraint::Length(6),
-                    Constraint::Length(if mult_choice { 6 } else { 3 }),
+                    Constraint::Length(if mult_choice { 12 } else { 3 }),
                 ])
                 .split(area);
 
@@ -127,7 +127,7 @@ pub fn run_game(
             if let Some(options) = app.current.options {
                 let rows = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(3), Constraint::Length(3)])
+                    .constraints([Constraint::Length(6), Constraint::Length(6)])
                     .split(chunks[2]);
                 for (idx, &value) in options.iter().enumerate() {
                     let halves = Layout::default()
@@ -136,23 +136,32 @@ pub fn run_game(
                         .split(rows[idx / 2]);
                     let cell_area = halves[idx % 2];
                     option_rects[idx] = cell_area;
-                    let style = if idx == app.selected {
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD)
+                    let style = Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD);
+                    let cell_block = Block::default()
+                        .title(format!("{})", idx + 1))
+                        .borders(Borders::ALL)
+                        .border_style(style);
+                    if use_small_text {
+                        // Leading blank line to roughly center the value
+                        // vertically in the taller cell.
+                        let cell = Paragraph::new(format!("\n{}", value))
+                            .alignment(Alignment::Center)
+                            .style(style)
+                            .block(cell_block);
+                        frame.render_widget(cell, cell_area);
                     } else {
-                        Style::default()
-                    };
-                    let cell = Paragraph::new(value.to_string())
-                        .alignment(Alignment::Center)
-                        .style(style)
-                        .block(
-                            Block::default()
-                                .title(format!("{})", idx + 1))
-                                .borders(Borders::ALL)
-                                .border_style(style),
-                        );
-                    frame.render_widget(cell, cell_area);
+                        let cell_inner = cell_block.inner(cell_area);
+                        frame.render_widget(cell_block, cell_area);
+                        let big_value = BigText::builder()
+                            .pixel_size(PixelSize::HalfHeight)
+                            .centered()
+                            .style(style.add_modifier(Modifier::BOLD))
+                            .lines(vec![Line::from(value.to_string())])
+                            .build();
+                        frame.render_widget(big_value, cell_inner);
+                    }
                 }
             } else {
                 let input_title = if voice.is_some() {
@@ -171,15 +180,6 @@ pub fn run_game(
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press && mult_choice => {
                     match key.code {
-                        KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l') => {
-                            app.selected ^= 1;
-                        }
-                        KeyCode::Up | KeyCode::Down | KeyCode::Char('k') | KeyCode::Char('j') => {
-                            app.selected ^= 2;
-                        }
-                        KeyCode::Enter | KeyCode::Char(' ') => {
-                            app.answer_with_option(app.selected);
-                        }
                         KeyCode::Char(c @ '1'..='4') => {
                             app.answer_with_option(c as usize - '1' as usize);
                         }
