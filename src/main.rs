@@ -18,10 +18,12 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::widgets::Paragraph;
 
 use crate::game::run_game;
-use crate::model::App;
-use crate::results::{RecentAttempt, ResultsAction, run_results};
+use crate::results::{ResultsAction, run_results};
 use crate::setup::{SetupState, run_setup};
 use crate::voice::VoiceEngine;
+
+/// Scores kept for the results page's session statistics.
+const MAX_RECENT_SCORES: usize = 10;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -34,8 +36,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     restore_terminal(&mut terminal)?;
 
     match result {
-        Ok(Some(_)) => Ok(()),
-        Ok(None) => {
+        Ok(true) => Ok(()),
+        Ok(false) => {
             println!("Canceled.");
             Ok(())
         }
@@ -43,12 +45,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 }
 
+/// Returns false if the user canceled at the setup menu.
 fn run(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     large_text_default: bool,
     voice_default: bool,
     mult_choice_default: bool,
-) -> Result<Option<App>, Box<dyn Error>> {
+) -> Result<bool, Box<dyn Error>> {
     let mut state = SetupState::new(voice_default, mult_choice_default, large_text_default);
 
     // Voice startup can fail (missing model, no microphone). Report it in the
@@ -56,7 +59,7 @@ fn run(
     let (setup, voice) = loop {
         let setup = match run_setup(terminal, &mut state)? {
             Some(config) => config,
-            None => return Ok(None),
+            None => return Ok(false),
         };
         if !setup.voice_enabled {
             break (setup, None);
@@ -77,12 +80,12 @@ fn run(
         }
     };
 
-    let mut game_config = setup.game;
-    let mut duration = setup.duration;
+    let game_config = setup.game;
+    let duration = setup.duration;
     let mult_choice = setup.mult_choice;
     let wrong_penalty = setup.wrong_penalty;
     let use_small_text = !setup.large_text;
-    let mut recent_attempts: Vec<RecentAttempt> = Vec::new();
+    let mut recent_scores: Vec<i32> = Vec::new();
 
     loop {
         let app = run_game(
@@ -94,20 +97,16 @@ fn run(
             mult_choice,
             wrong_penalty,
         )?;
-        recent_attempts.push(RecentAttempt {
-            score: app.score,
-        });
-        if recent_attempts.len() > 10 {
-            let overflow = recent_attempts.len() - 10;
-            recent_attempts.drain(0..overflow);
+        recent_scores.push(app.score);
+        if recent_scores.len() > MAX_RECENT_SCORES {
+            recent_scores.remove(0);
         }
 
-        match run_results(terminal, &app, &recent_attempts)? {
-            ResultsAction::Restart => {
-                game_config = app.config.clone();
-                duration = app.duration;
-            }
-            ResultsAction::Exit => return Ok(Some(app)),
+        match run_results(terminal, &app, &recent_scores)? {
+            // Restart reuses the same config and duration, so there is nothing
+            // to carry over -- just play another round.
+            ResultsAction::Restart => {}
+            ResultsAction::Exit => return Ok(true),
         }
     }
 }

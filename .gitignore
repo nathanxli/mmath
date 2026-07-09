@@ -1,3 +1,9 @@
+# Build output
 /target
+
+# Voice assets fetched by scripts/fetch-voice-assets.sh
 /lib
 /models
+
+# Local editor / OS cruft
+.DS_Store

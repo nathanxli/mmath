@@ -61,20 +61,6 @@ pub struct GameConfig {
     pub div_enabled: bool,
 }
 
-impl Default for GameConfig {
-    fn default() -> Self {
-        Self {
-            add_max: 100,
-            mul_max_left: 12,
-            mul_max_right: 100,
-            add_enabled: true,
-            sub_enabled: true,
-            mul_enabled: true,
-            div_enabled: true,
-        }
-    }
-}
-
 impl GameConfig {
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.add_max < ADD_MIN {
@@ -237,7 +223,6 @@ pub struct App {
     pub history: Vec<QuestionRecord>,
     pub input: String,
     pub score: i32,
-    solved: usize,
     pub duration: Duration,
     started_at: Instant,
     pub mult_choice: bool,
@@ -262,7 +247,6 @@ impl App {
             history: Vec::new(),
             input: String::new(),
             score: 0,
-            solved: 0,
             duration,
             started_at: Instant::now(),
             mult_choice,
@@ -290,7 +274,6 @@ impl App {
                     voice_latency: None,
                 });
                 self.score += 1;
-                self.solved += 1;
                 self.current = self.generator.next();
                 self.question_started_at = Instant::now();
                 self.input.clear();
@@ -313,7 +296,6 @@ impl App {
         });
         if correct {
             self.score += 1;
-            self.solved += 1;
         } else {
             self.score += self.wrong_penalty;
         }

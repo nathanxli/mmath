@@ -17,14 +17,22 @@ pub enum ResultsAction {
     Exit,
 }
 
-pub struct RecentAttempt {
-    pub score: i32,
+/// Population mean and standard deviation; `None` for an empty sample.
+fn mean_stdev(values: &[f64]) -> Option<(f64, f64)> {
+    if values.is_empty() {
+        return None;
+    }
+    let count = values.len() as f64;
+    let mean = values.iter().sum::<f64>() / count;
+    let variance = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / count;
+    Some((mean, variance.sqrt()))
 }
 
+/// `recent_scores` holds the scores of this session's attempts, oldest first.
 pub fn run_results(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &App,
-    recent_attempts: &[RecentAttempt],
+    recent_scores: &[i32],
 ) -> Result<ResultsAction, Box<dyn Error>> {
     let mut scroll: usize = 0;
 
@@ -77,29 +85,17 @@ pub fn run_results(
                 .constraints([Constraint::Min(6), Constraint::Length(4)])
                 .split(middle_chunks[1]);
 
-            let mut history_lines = Vec::new();
-            if app.history.is_empty() {
-                history_lines.push(Line::from("No answered questions."));
-            } else {
-                let count = app.history.len() as f64;
-                let mean = app
-                    .history
-                    .iter()
-                    .map(|record| record.elapsed.as_secs_f64())
-                    .sum::<f64>()
-                    / count;
-                let variance = app
-                    .history
-                    .iter()
-                    .map(|record| {
-                        let delta = record.elapsed.as_secs_f64() - mean;
-                        delta * delta
-                    })
-                    .sum::<f64>()
-                    / count;
-                let stdev = variance.sqrt();
-                let threshold = mean + (2.0 * stdev);
+            let times: Vec<f64> = app
+                .history
+                .iter()
+                .map(|record| record.elapsed.as_secs_f64())
+                .collect();
+            let time_stats = mean_stdev(&times);
 
+            let mut history_lines = Vec::new();
+            if let Some((mean, stdev)) = time_stats {
+                // Flag answers that took unusually long for this session.
+                let threshold = mean + (2.0 * stdev);
                 for (idx, record) in app.history.iter().enumerate() {
                     let elapsed = record.elapsed.as_secs_f64();
                     let time_style = if elapsed > threshold {
@@ -139,6 +135,8 @@ pub fn run_results(
                     }
                     history_lines.push(Line::from(spans));
                 }
+            } else {
+                history_lines.push(Line::from("No answered questions."));
             }
 
             let history_widget = Paragraph::new(history_lines)
@@ -151,42 +149,23 @@ pub fn run_results(
                 );
             frame.render_widget(history_widget, left_chunks[0]);
 
-            let question_stats_lines = if app.history.is_empty() {
-                vec![
-                    Line::from("μ: n/a"),
-                    Line::from("σ: n/a"),
-                ]
-            } else {
-                let count = app.history.len() as f64;
-                let mean = app
-                    .history
-                    .iter()
-                    .map(|record| record.elapsed.as_secs_f64())
-                    .sum::<f64>()
-                    / count;
-                let variance = app
-                    .history
-                    .iter()
-                    .map(|record| {
-                        let delta = record.elapsed.as_secs_f64() - mean;
-                        delta * delta
-                    })
-                    .sum::<f64>()
-                    / count;
-                let stdev = variance.sqrt();
-                let mut lines = vec![
-                    Line::from(format!("μ: {:.2}s", mean)),
-                    Line::from(format!("σ: {:.2}s", stdev)),
-                ];
-                if app.mult_choice {
-                    let correct = app.history.iter().filter(|r| r.correct).count();
-                    lines.push(Line::from(format!(
-                        "Correct: {}/{}",
-                        correct,
-                        app.history.len()
-                    )));
+            let question_stats_lines = match time_stats {
+                None => vec![Line::from("μ: n/a"), Line::from("σ: n/a")],
+                Some((mean, stdev)) => {
+                    let mut lines = vec![
+                        Line::from(format!("μ: {:.2}s", mean)),
+                        Line::from(format!("σ: {:.2}s", stdev)),
+                    ];
+                    if app.mult_choice {
+                        let correct = app.history.iter().filter(|r| r.correct).count();
+                        lines.push(Line::from(format!(
+                            "Correct: {}/{}",
+                            correct,
+                            app.history.len()
+                        )));
+                    }
+                    lines
                 }
-                lines
             };
             let question_stats_widget = Paragraph::new(question_stats_lines).block(
                 Block::default()
@@ -197,25 +176,17 @@ pub fn run_results(
             frame.render_widget(question_stats_widget, left_chunks[1]);
 
             let mut recent_lines = Vec::new();
-            if recent_attempts.is_empty() {
+            if recent_scores.is_empty() {
                 recent_lines.push(Line::from("No attempts yet."));
             } else {
                 recent_lines.push(Line::from("Scores:"));
-                let best = recent_attempts
-                    .iter()
-                    .map(|attempt| attempt.score)
-                    .max()
-                    .unwrap_or(0);
-                let worst = recent_attempts
-                    .iter()
-                    .map(|attempt| attempt.score)
-                    .min()
-                    .unwrap_or(0);
+                let best = recent_scores.iter().max().copied().unwrap_or(0);
+                let worst = recent_scores.iter().min().copied().unwrap_or(0);
 
-                for (idx, attempt) in recent_attempts.iter().rev().enumerate() {
-                    let style = if recent_attempts.len() == 1 || attempt.score == best {
+                for (idx, &score) in recent_scores.iter().rev().enumerate() {
+                    let style = if recent_scores.len() == 1 || score == best {
                         Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
-                    } else if attempt.score == worst {
+                    } else if score == worst {
                         Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
                     } else if idx == 0 {
                         Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD)
@@ -223,7 +194,7 @@ pub fn run_results(
                         Style::default()
                     };
                     recent_lines.push(Line::from(Span::styled(
-                        format!("{:>2}. {}", idx + 1, attempt.score),
+                        format!("{:>2}. {}", idx + 1, score),
                         style,
                     )));
                 }
@@ -237,31 +208,13 @@ pub fn run_results(
             );
             frame.render_widget(recent_widget, right_chunks[0]);
 
-            let session_stats_lines = if recent_attempts.is_empty() {
-                vec![
-                    Line::from("μ: n/a"),
-                    Line::from("σ: n/a"),
-                ]
-            } else {
-                let count = recent_attempts.len() as f64;
-                let mean = recent_attempts
-                    .iter()
-                    .map(|attempt| attempt.score as f64)
-                    .sum::<f64>()
-                    / count;
-                let variance = recent_attempts
-                    .iter()
-                    .map(|attempt| {
-                        let delta = attempt.score as f64 - mean;
-                        delta * delta
-                    })
-                    .sum::<f64>()
-                    / count;
-                let stdev = variance.sqrt();
-                vec![
+            let scores: Vec<f64> = recent_scores.iter().map(|&s| s as f64).collect();
+            let session_stats_lines = match mean_stdev(&scores) {
+                None => vec![Line::from("μ: n/a"), Line::from("σ: n/a")],
+                Some((mean, stdev)) => vec![
                     Line::from(format!("μ: {:.2}", mean)),
                     Line::from(format!("σ: {:.2}", stdev)),
-                ]
+                ],
             };
             let session_stats_widget = Paragraph::new(session_stats_lines).block(
                 Block::default()

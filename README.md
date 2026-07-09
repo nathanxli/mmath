@@ -12,6 +12,7 @@ Inspired by [ttyper](https://github.com/max-niederman/ttyper).
 
 ## Install
 
+Voice input is off by default, so the base install needs no downloads.
 
 ### Option 1: Install from a local clone (recommended)
 
@@ -48,50 +49,56 @@ mmath
 cargo run
 ```
 
+## Options
+
+Everything is configurable in the start menu. Flags just preset a toggle:
+
+| Flag | Effect |
+| --- | --- |
+| `-v`, `--voice` | Answer by speaking (needs a `--features voice` build, see below) |
+| `-m`, `--mult-choice` | Multiple choice: pick from a 2x2 grid by click or keys 1-4 |
+| `-s` | Small text (large text is on by default) |
+
+Voice and multiple choice are mutually exclusive; `-m` wins if both are given.
+
 ## Voice input
 
-Answers can be spoken instead of typed. Recognition runs fully offline
-([Vosk](https://alphacephei.com/vosk/)) with a grammar restricted to number
-words, matching on streaming partial results so an answer registers within
-~100ms of you finishing the number.
-
-### Setup
-
-Fetch the native library and speech model (one-time, ~45 MB into `lib/` and
-`models/`):
+Answers can be spoken instead of typed, recognized fully offline with
+[Vosk](https://alphacephei.com/vosk/). It is opt-in: it pulls in a native
+library and a speech model (~45 MB into `lib/` and `models/`).
 
 ```bash
 scripts/fetch-voice-assets.sh
-cargo build
+cargo install --path . --features voice   # or: cargo run --features voice
 ```
 
-macOS will ask for microphone permission on first use.
+`voice` is compile-time, so you pass it only when building. The installed
+`mmath` keeps voice until you rebuild, so run it with no flags and toggle
+voice in the menu (or with `-v`). A later `cargo install --path .` without
+`--features voice` silently replaces the binary with one that has none, and
+the "Voice input" menu row goes grey. The binary loads `libvosk` from this
+clone's `lib/` by absolute path, so keep the project directory in place.
 
-### Usage
+Both "one hundred twenty three" and digit-by-digit "one two three" work.
+Keyboard input stays active alongside voice. Pause briefly between answers so
+the recognizer can segment utterances. macOS asks for microphone permission on
+first use.
 
-Toggle "Voice input" in the start menu, or pre-enable it from the CLI:
+Each answer's latency (end of speech to answer registered) is shown in the
+header and on the results page, with an adjusted solve time that subtracts it.
+
+The model is loaded from `models/` (first directory starting with
+`vosk-model`), or from `MMATH_VOSK_MODEL` if set. If you installed with
+`cargo install`, set `MMATH_VOSK_MODEL` or run from the project directory.
+
+## Uninstall
 
 ```bash
-mmath -v   # or --voice
+cargo uninstall mmath          # if installed with `cargo install`
+sudo rm /usr/local/bin/mmath   # if you symlinked it instead
 ```
 
-With voice on, each answer's recognition latency (end of speech -> answer
-typed, pinned by the decoder's word-end timestamps) is shown live in the
-header and per question on the results page, along with an adjusted solve
-time (total time minus recognition latency, i.e. time until you finished
-speaking -- the analog of a typed answer's final keystroke).
-
-Both spoken styles work: "one hundred twenty three" and digit-by-digit
-"one two three". Keyboard input stays active alongside voice. Pause briefly
-between answers so the recognizer can segment utterances.
-
-Notes:
-
-- The recognizer looks for the model in `models/` (first directory starting
-  with `vosk-model`), or wherever `MMATH_VOSK_MODEL` points. If you installed
-  the binary with `cargo install`, set `MMATH_VOSK_MODEL` or run from the
-  project directory.
-- Latency plumbing: partial results are matched while you speak (waiting for
-  Vosk's final result would add 300-500ms of endpoint silence), and the game
-  loop polls at 15ms when voice is on.
+Then delete the clone. Build output (`target/`) and the voice assets (`lib/`,
+`models/`) all live inside it. If you used voice on macOS, revoke the leftover
+microphone grant under System Settings > Privacy & Security > Microphone.
 
