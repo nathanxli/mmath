@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Downloads the native libvosk library into ./lib and a small English Vosk
-# model into ./models. Both are required to build and run with voice input.
+# model into ./models. Both are required to build and run with --features voice.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

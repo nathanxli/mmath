@@ -20,7 +20,7 @@ use ratatui::widgets::Paragraph;
 use crate::game::run_game;
 use crate::model::App;
 use crate::results::{RecentAttempt, ResultsAction, run_results};
-use crate::setup::run_setup;
+use crate::setup::{SetupState, run_setup};
 use crate::voice::VoiceEngine;
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -49,21 +49,32 @@ fn run(
     voice_default: bool,
     mult_choice_default: bool,
 ) -> Result<Option<App>, Box<dyn Error>> {
-    let setup = match run_setup(terminal, voice_default, mult_choice_default, large_text_default)? {
-        Some(config) => config,
-        None => return Ok(None),
-    };
+    let mut state = SetupState::new(voice_default, mult_choice_default, large_text_default);
 
-    let voice = if setup.voice_enabled {
+    // Voice startup can fail (missing model, no microphone). Report it in the
+    // menu and let the user start a keyboard drill instead of exiting.
+    let (setup, voice) = loop {
+        let setup = match run_setup(terminal, &mut state)? {
+            Some(config) => config,
+            None => return Ok(None),
+        };
+        if !setup.voice_enabled {
+            break (setup, None);
+        }
         terminal.draw(|frame| {
             frame.render_widget(Paragraph::new("Loading voice model..."), frame.area());
         })?;
-        let engine = VoiceEngine::start().map_err(|e| format!("voice setup failed: {}", e))?;
-        // Native libs may have written to stderr during load; force a repaint.
-        terminal.clear()?;
-        Some(engine)
-    } else {
-        None
+        match VoiceEngine::start() {
+            Ok(engine) => {
+                // Native libs may have written to stderr during load; repaint.
+                terminal.clear()?;
+                break (setup, Some(engine));
+            }
+            Err(err) => {
+                terminal.clear()?;
+                state.voice_failed(err);
+            }
+        }
     };
 
     let mut game_config = setup.game;

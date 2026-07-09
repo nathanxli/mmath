@@ -11,6 +11,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Padding, Paragraph};
 
 use crate::model::{ADD_MIN, GameConfig, MUL_MIN};
+use crate::voice;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SetupField {
@@ -76,7 +77,7 @@ pub struct SetupConfig {
     pub large_text: bool,
 }
 
-struct SetupState {
+pub struct SetupState {
     focus: SetupField,
     add_enabled: bool,
     sub_enabled: bool,
@@ -98,7 +99,8 @@ struct SetupState {
 }
 
 impl SetupState {
-    fn new(voice_default: bool, mult_choice_default: bool, large_text_default: bool) -> Self {
+    pub fn new(voice_default: bool, mult_choice_default: bool, large_text_default: bool) -> Self {
+        let voice_wanted = voice_default && !mult_choice_default;
         Self {
             focus: SetupField::AddMode,
             add_enabled: true,
@@ -115,12 +117,23 @@ impl SetupState {
             time_edited: false,
             // Voice and multiple-choice are mutually exclusive; -m wins if
             // both flags are given.
-            voice_enabled: voice_default && !mult_choice_default,
+            voice_enabled: voice_wanted && voice::AVAILABLE,
             mult_choice: mult_choice_default,
             penalize_wrong: false,
             large_text: large_text_default,
-            message: String::from("Set ranges and time, then start."),
+            message: if voice_wanted && !voice::AVAILABLE {
+                String::from(voice::UNSUPPORTED)
+            } else {
+                String::from("Set ranges and time, then start.")
+            },
         }
+    }
+
+    /// Voice startup failed at runtime (missing model, no microphone). Drop back
+    /// into the menu with the reason rather than killing the session.
+    pub fn voice_failed(&mut self, err: String) {
+        self.voice_enabled = false;
+        self.message = format!("Voice unavailable: {}", err);
     }
 
     fn active_input_mut(&mut self) -> Option<(&mut String, &mut bool)> {
@@ -168,6 +181,10 @@ impl SetupState {
                 true
             }
             SetupField::Voice => {
+                if !voice::AVAILABLE {
+                    self.message = String::from(voice::UNSUPPORTED);
+                    return true;
+                }
                 self.voice_enabled = !self.voice_enabled;
                 if self.voice_enabled {
                     self.mult_choice = false;
@@ -231,14 +248,12 @@ impl SetupState {
     }
 }
 
+/// Takes the state by reference so a caller can re-enter the menu (e.g. after
+/// voice startup fails) without discarding the ranges the user already typed.
 pub fn run_setup(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    voice_default: bool,
-    mult_choice_default: bool,
-    large_text_default: bool,
+    setup: &mut SetupState,
 ) -> Result<Option<SetupConfig>, Box<dyn Error>> {
-    let mut setup = SetupState::new(voice_default, mult_choice_default, large_text_default);
-
     loop {
         terminal.draw(|frame| {
             let area = frame.area();
@@ -472,6 +487,18 @@ fn large_text_line(enabled: bool, focused: bool) -> Line<'static> {
 }
 
 fn voice_line(enabled: bool, focused: bool) -> Line<'static> {
+    if !voice::AVAILABLE {
+        let dim = Style::default().fg(Color::DarkGray);
+        let label_style = if focused {
+            dim.add_modifier(Modifier::BOLD)
+        } else {
+            dim
+        };
+        return Line::from(vec![
+            Span::styled("Voice input:", label_style),
+            Span::styled("  [ ]  (rebuild with --features voice)", dim),
+        ]);
+    }
     let label_style = if focused {
         Style::default()
             .fg(Color::Yellow)
@@ -526,4 +553,68 @@ fn start_line(focused: bool) -> Line<'static> {
             .add_modifier(Modifier::BOLD)
     };
     Line::from(Span::styled("Start", style))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn voice_flag_only_takes_effect_when_compiled_in() {
+        let state = SetupState::new(true, false, true);
+        assert_eq!(state.voice_enabled, voice::AVAILABLE);
+        if !voice::AVAILABLE {
+            assert_eq!(state.message, voice::UNSUPPORTED);
+        }
+    }
+
+    #[test]
+    fn toggling_voice_is_a_noop_without_support() {
+        let mut state = SetupState::new(false, false, true);
+        state.focus = SetupField::Voice;
+        assert!(
+            state.toggle_focused_mode(),
+            "toggle should request a redraw"
+        );
+        assert_eq!(state.voice_enabled, voice::AVAILABLE);
+    }
+
+    #[test]
+    fn voice_failure_disables_voice_and_reports_reason() {
+        let mut state = SetupState::new(false, false, true);
+        state.voice_enabled = true;
+        state.voice_failed(String::from("no Vosk model found"));
+        assert!(!state.voice_enabled);
+        assert!(state.message.contains("no Vosk model found"));
+    }
+
+    #[cfg(not(feature = "voice"))]
+    #[test]
+    fn voice_row_shows_rebuild_hint() {
+        use ratatui::backend::TestBackend;
+        let mut terminal = Terminal::new(TestBackend::new(60, 1)).unwrap();
+        terminal
+            .draw(|frame| {
+                frame.render_widget(Paragraph::new(vec![voice_line(false, false)]), frame.area())
+            })
+            .unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(
+            rendered.contains("rebuild with --features voice"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn mult_choice_flag_wins_over_voice() {
+        let state = SetupState::new(true, true, true);
+        assert!(!state.voice_enabled);
+        assert!(state.mult_choice);
+    }
 }

@@ -1,11 +1,30 @@
-use std::env;
-use std::path::PathBuf;
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::thread;
-use std::time::{Duration, Instant};
+// Number parsing and the resampler stay compiled without the `voice` feature so
+// their unit tests keep running; only the vosk/cpal-backed engine drops out.
+#![cfg_attr(not(feature = "voice"), allow(dead_code))]
 
+#[cfg(feature = "voice")]
+use std::env;
+#[cfg(feature = "voice")]
+use std::path::PathBuf;
+use std::sync::mpsc::Receiver;
+#[cfg(feature = "voice")]
+use std::sync::mpsc::{self, Sender};
+#[cfg(feature = "voice")]
+use std::thread;
+#[cfg(feature = "voice")]
+use std::time::Duration;
+use std::time::Instant;
+
+#[cfg(feature = "voice")]
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+#[cfg(feature = "voice")]
 use vosk::{CompleteResult, DecodingState, Model, Recognizer, Word};
+
+/// Whether this build can actually do voice recognition.
+pub const AVAILABLE: bool = cfg!(feature = "voice");
+
+/// Shown when voice is requested from a build that was compiled without it.
+pub const UNSUPPORTED: &str = "voice support not compiled in; rebuild with --features voice";
 
 /// Vosk wants 16 kHz mono i16 audio.
 const TARGET_SAMPLE_RATE: f64 = 16000.0;
@@ -32,10 +51,21 @@ pub enum VoiceEvent {
 pub struct VoiceEngine {
     // Keeps the microphone stream alive; dropping it stops capture, which in
     // turn shuts down the recognition thread.
+    #[cfg(feature = "voice")]
     _stream: cpal::Stream,
     pub events: Receiver<VoiceEvent>,
 }
 
+/// Without the feature the type still exists -- `game.rs` only ever names
+/// `Option<&VoiceEngine>` and reads `events` -- but it can never be built.
+#[cfg(not(feature = "voice"))]
+impl VoiceEngine {
+    pub fn start() -> Result<Self, String> {
+        Err(UNSUPPORTED.to_string())
+    }
+}
+
+#[cfg(feature = "voice")]
 impl VoiceEngine {
     pub fn start() -> Result<Self, String> {
         let model_path = find_model()?;
@@ -166,6 +196,7 @@ impl VoiceEngine {
 }
 
 /// Downmix interleaved samples to mono and forward to the recognition thread.
+#[cfg(feature = "voice")]
 fn send_mono(data: &[f32], channels: usize, tx: &Sender<Vec<f32>>) {
     let mono: Vec<f32> = data
         .chunks_exact(channels.max(1))
@@ -178,6 +209,7 @@ fn send_mono(data: &[f32], channels: usize, tx: &Sender<Vec<f32>>) {
 /// number word, mapped from audio-stream time to wall clock. Vosk word times
 /// are stream-absolute seconds, and "now" corresponds to stream position
 /// `samples_fed / 16000`, so end-of-speech was `stream_secs - word_end` ago.
+#[cfg(feature = "voice")]
 fn speech_end_instant(words: &[Word], samples_fed: u64) -> Instant {
     let now = Instant::now();
     let stream_secs = samples_fed as f64 / TARGET_SAMPLE_RATE;
@@ -195,6 +227,7 @@ fn speech_end_instant(words: &[Word], samples_fed: u64) -> Instant {
     }
 }
 
+#[cfg(feature = "voice")]
 fn find_model() -> Result<PathBuf, String> {
     if let Ok(path) = env::var("MMATH_VOSK_MODEL") {
         let path = PathBuf::from(path);
@@ -451,8 +484,10 @@ mod tests {
     /// RMS level (on i16 samples) above which a chunk counts as speech.
     /// Only used by the latency probe as a sanity reference against the
     /// decoder's word-end timestamps.
+    #[cfg(feature = "voice")]
     const SPEECH_RMS_THRESHOLD: f64 = 300.0;
 
+    #[cfg(feature = "voice")]
     fn rms(samples: &[i16]) -> f64 {
         let sum: f64 = samples.iter().map(|&s| (s as f64) * (s as f64)).sum();
         (sum / samples.len() as f64).sqrt()
@@ -518,6 +553,7 @@ mod tests {
     /// End-to-end pipeline check: synthesize speech with macOS `say`, run it
     /// through the grammar-constrained recognizer, and parse the result.
     /// Skips (passes) when the model or `say` is unavailable.
+    #[cfg(feature = "voice")]
     #[test]
     fn recognizes_synthesized_speech() {
         let Ok(model_path) = find_model() else {
@@ -559,7 +595,8 @@ mod tests {
     /// Offline probe of partial-match latency: streams synthesized speech in
     /// 20ms chunks and reports how far past the end of speech the recognizer
     /// first produced a parsable match, plus per-chunk compute time.
-    /// Run with: cargo test partial_latency_probe -- --ignored --nocapture
+    /// Run with: cargo test --features voice partial_latency_probe -- --ignored --nocapture
+    #[cfg(feature = "voice")]
     #[test]
     #[ignore]
     fn partial_latency_probe() {
