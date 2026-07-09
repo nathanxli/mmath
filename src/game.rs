@@ -2,10 +2,14 @@ use std::error::Error;
 use std::io;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton,
+    MouseEventKind,
+};
+use crossterm::execute;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
@@ -20,8 +24,17 @@ pub fn run_game(
     duration: Duration,
     use_small_text: bool,
     voice: Option<&VoiceEngine>,
+    mult_choice: bool,
+    wrong_penalty: i32,
 ) -> Result<App, Box<dyn Error>> {
-    let mut app = App::new(config, duration);
+    let mut app = App::new(config, duration, mult_choice, wrong_penalty);
+    // Capture the mouse only while a multiple-choice game runs so terminal
+    // text selection keeps working everywhere else.
+    if mult_choice {
+        execute!(io::stdout(), EnableMouseCapture)?;
+    }
+    // Grid cell areas from the last frame, for click hit-testing.
+    let mut option_rects: [Rect; 4] = [Rect::default(); 4];
     let mut voice_latencies: Vec<Duration> = Vec::new();
     // A voice answer that advanced a question, awaiting its latency report
     // (which arrives once the utterance finalizes): value, when it was
@@ -46,7 +59,7 @@ pub fn run_game(
                 .constraints([
                     Constraint::Length(3),
                     Constraint::Length(6),
-                    Constraint::Length(3),
+                    Constraint::Length(if mult_choice { 6 } else { 3 }),
                 ])
                 .split(area);
 
@@ -111,19 +124,69 @@ pub fn run_game(
                 frame.render_widget(question, question_inner);
             }
 
-            let input_title = if voice.is_some() {
-                "Answer (Esc to quit, voice on)"
+            if let Some(options) = app.current.options {
+                let rows = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(3), Constraint::Length(3)])
+                    .split(chunks[2]);
+                for (idx, &value) in options.iter().enumerate() {
+                    let halves = Layout::default()
+                        .direction(Direction::Horizontal)
+                        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                        .split(rows[idx / 2]);
+                    let cell_area = halves[idx % 2];
+                    option_rects[idx] = cell_area;
+                    let style = if idx == app.selected {
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    };
+                    let cell = Paragraph::new(value.to_string())
+                        .alignment(Alignment::Center)
+                        .style(style)
+                        .block(
+                            Block::default()
+                                .title(format!("{})", idx + 1))
+                                .borders(Borders::ALL)
+                                .border_style(style),
+                        );
+                    frame.render_widget(cell, cell_area);
+                }
             } else {
-                "Answer (Esc to quit)"
-            };
-            let input = Paragraph::new(app.input.clone()).block(
-                Block::default().title(input_title).borders(Borders::ALL),
-            );
-            frame.render_widget(input, chunks[2]);
+                let input_title = if voice.is_some() {
+                    "Answer (Esc to quit, voice on)"
+                } else {
+                    "Answer (Esc to quit)"
+                };
+                let input = Paragraph::new(app.input.clone()).block(
+                    Block::default().title(input_title).borders(Borders::ALL),
+                );
+                frame.render_widget(input, chunks[2]);
+            }
         })?;
 
         if event::poll(poll_timeout)? {
             match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press && mult_choice => {
+                    match key.code {
+                        KeyCode::Left | KeyCode::Right | KeyCode::Char('h') | KeyCode::Char('l') => {
+                            app.selected ^= 1;
+                        }
+                        KeyCode::Up | KeyCode::Down | KeyCode::Char('k') | KeyCode::Char('j') => {
+                            app.selected ^= 2;
+                        }
+                        KeyCode::Enter | KeyCode::Char(' ') => {
+                            app.answer_with_option(app.selected);
+                        }
+                        KeyCode::Char(c @ '1'..='4') => {
+                            app.answer_with_option(c as usize - '1' as usize);
+                        }
+                        KeyCode::Esc => break,
+                        _ => {}
+                    }
+                }
                 Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
                     KeyCode::Char(c) if c.is_ascii_digit() => {
                         app.input.push(c);
@@ -140,6 +203,17 @@ pub fn run_game(
                     KeyCode::Esc => break,
                     _ => {}
                 },
+                Event::Mouse(mouse)
+                    if mult_choice
+                        && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) =>
+                {
+                    if let Some(idx) = option_rects
+                        .iter()
+                        .position(|rect| rect.contains(Position::new(mouse.column, mouse.row)))
+                    {
+                        app.answer_with_option(idx);
+                    }
+                }
                 _ => {}
             }
         }
@@ -176,5 +250,8 @@ pub fn run_game(
         }
     }
 
+    if mult_choice {
+        execute!(io::stdout(), DisableMouseCapture)?;
+    }
     Ok(app)
 }

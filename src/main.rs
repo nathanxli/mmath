@@ -8,6 +8,7 @@ use std::env;
 use std::error::Error;
 use std::io;
 
+use crossterm::event::DisableMouseCapture;
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -26,8 +27,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
     let use_small_text = args.iter().any(|arg| arg == "-s");
     let voice_default = args.iter().any(|arg| arg == "-v" || arg == "--voice");
+    let mult_choice_default = args.iter().any(|arg| arg == "-m" || arg == "--mult-choice");
     let mut terminal = init_terminal()?;
-    let result = run(&mut terminal, use_small_text, voice_default);
+    let result = run(&mut terminal, use_small_text, voice_default, mult_choice_default);
     restore_terminal(&mut terminal)?;
 
     match result {
@@ -44,8 +46,9 @@ fn run(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     use_small_text: bool,
     voice_default: bool,
+    mult_choice_default: bool,
 ) -> Result<Option<App>, Box<dyn Error>> {
-    let setup = match run_setup(terminal, voice_default)? {
+    let setup = match run_setup(terminal, voice_default, mult_choice_default)? {
         Some(config) => config,
         None => return Ok(None),
     };
@@ -64,6 +67,8 @@ fn run(
 
     let mut game_config = setup.game;
     let mut duration = setup.duration;
+    let mult_choice = setup.mult_choice;
+    let wrong_penalty = setup.wrong_penalty;
     let mut recent_attempts: Vec<RecentAttempt> = Vec::new();
 
     loop {
@@ -73,6 +78,8 @@ fn run(
             duration,
             use_small_text,
             voice.as_ref(),
+            mult_choice,
+            wrong_penalty,
         )?;
         recent_attempts.push(RecentAttempt {
             score: app.score,
@@ -105,7 +112,9 @@ fn restore_terminal(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
 ) -> Result<(), Box<dyn Error>> {
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    // Mouse capture is only enabled during multiple-choice games, but
+    // disabling it unconditionally is harmless and covers error exits.
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
     terminal.show_cursor()?;
     Ok(())
 }

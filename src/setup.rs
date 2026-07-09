@@ -23,6 +23,8 @@ enum SetupField {
     MulHighRight,
     TimeSeconds,
     Voice,
+    MultChoice,
+    WrongPenalty,
     Start,
 }
 
@@ -37,7 +39,9 @@ impl SetupField {
             SetupField::MulHighLeft => SetupField::MulHighRight,
             SetupField::MulHighRight => SetupField::TimeSeconds,
             SetupField::TimeSeconds => SetupField::Voice,
-            SetupField::Voice => SetupField::Start,
+            SetupField::Voice => SetupField::MultChoice,
+            SetupField::MultChoice => SetupField::WrongPenalty,
+            SetupField::WrongPenalty => SetupField::Start,
             SetupField::Start => SetupField::AddMode,
         }
     }
@@ -53,7 +57,9 @@ impl SetupField {
             SetupField::MulHighRight => SetupField::MulHighLeft,
             SetupField::TimeSeconds => SetupField::MulHighRight,
             SetupField::Voice => SetupField::TimeSeconds,
-            SetupField::Start => SetupField::Voice,
+            SetupField::MultChoice => SetupField::Voice,
+            SetupField::WrongPenalty => SetupField::MultChoice,
+            SetupField::Start => SetupField::WrongPenalty,
         }
     }
 }
@@ -62,6 +68,8 @@ pub struct SetupConfig {
     pub game: GameConfig,
     pub duration: Duration,
     pub voice_enabled: bool,
+    pub mult_choice: bool,
+    pub wrong_penalty: i32,
 }
 
 struct SetupState {
@@ -79,11 +87,13 @@ struct SetupState {
     time_input: String,
     time_edited: bool,
     voice_enabled: bool,
+    mult_choice: bool,
+    penalize_wrong: bool,
     message: String,
 }
 
 impl SetupState {
-    fn new(voice_default: bool) -> Self {
+    fn new(voice_default: bool, mult_choice_default: bool) -> Self {
         Self {
             focus: SetupField::AddMode,
             add_enabled: true,
@@ -98,7 +108,11 @@ impl SetupState {
             mul_high_right_edited: false,
             time_input: String::from("120"),
             time_edited: false,
-            voice_enabled: voice_default,
+            // Voice and multiple-choice are mutually exclusive; -m wins if
+            // both flags are given.
+            voice_enabled: voice_default && !mult_choice_default,
+            mult_choice: mult_choice_default,
+            penalize_wrong: false,
             message: String::from("Set ranges and time, then start."),
         }
     }
@@ -118,6 +132,8 @@ impl SetupState {
             }
             SetupField::TimeSeconds => Some((&mut self.time_input, &mut self.time_edited)),
             SetupField::Voice => None,
+            SetupField::MultChoice => None,
+            SetupField::WrongPenalty => None,
             SetupField::Start => None,
         }
     }
@@ -142,6 +158,20 @@ impl SetupState {
             }
             SetupField::Voice => {
                 self.voice_enabled = !self.voice_enabled;
+                if self.voice_enabled {
+                    self.mult_choice = false;
+                }
+                true
+            }
+            SetupField::MultChoice => {
+                self.mult_choice = !self.mult_choice;
+                if self.mult_choice {
+                    self.voice_enabled = false;
+                }
+                true
+            }
+            SetupField::WrongPenalty => {
+                self.penalize_wrong = !self.penalize_wrong;
                 true
             }
             _ => false,
@@ -183,6 +213,8 @@ impl SetupState {
             game: config,
             duration: Duration::from_secs(time_seconds),
             voice_enabled: self.voice_enabled,
+            mult_choice: self.mult_choice,
+            wrong_penalty: if self.penalize_wrong { -1 } else { 0 },
         })
     }
 }
@@ -190,8 +222,9 @@ impl SetupState {
 pub fn run_setup(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     voice_default: bool,
+    mult_choice_default: bool,
 ) -> Result<Option<SetupConfig>, Box<dyn Error>> {
-    let mut setup = SetupState::new(voice_default);
+    let mut setup = SetupState::new(voice_default, mult_choice_default);
 
     loop {
         terminal.draw(|frame| {
@@ -230,6 +263,12 @@ pub fn run_setup(
                     setup.focus == SetupField::TimeSeconds,
                 ),
                 voice_line(setup.voice_enabled, setup.focus == SetupField::Voice),
+                mult_choice_line(setup.mult_choice, setup.focus == SetupField::MultChoice),
+                penalty_line(
+                    setup.penalize_wrong,
+                    setup.focus == SetupField::WrongPenalty,
+                    setup.mult_choice,
+                ),
                 Line::from(""),
                 start_line(setup.focus == SetupField::Start),
             ];
@@ -415,6 +454,36 @@ fn voice_line(enabled: bool, focused: bool) -> Line<'static> {
     Line::from(vec![
         Span::styled("Voice input: ", label_style),
         mode_span("mic", enabled, focused),
+    ])
+}
+
+fn mult_choice_line(enabled: bool, focused: bool) -> Line<'static> {
+    let label_style = if focused {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    Line::from(vec![
+        Span::styled("Multiple choice: ", label_style),
+        mode_span("2x2", enabled, focused),
+    ])
+}
+
+fn penalty_line(enabled: bool, focused: bool, mult_choice_on: bool) -> Line<'static> {
+    let label_style = if focused {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else if !mult_choice_on {
+        Style::default().fg(Color::DarkGray)
+    } else {
+        Style::default()
+    };
+    Line::from(vec![
+        Span::styled("Wrong answer penalty: ", label_style),
+        mode_span("-1", enabled, focused),
     ])
 }
 

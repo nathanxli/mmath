@@ -18,7 +18,7 @@ pub enum ResultsAction {
 }
 
 pub struct RecentAttempt {
-    pub score: usize,
+    pub score: i32,
 }
 
 pub fn run_results(
@@ -67,7 +67,10 @@ pub fn run_results(
                 .split(chunks[1]);
             let left_chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Min(6), Constraint::Length(4)])
+                .constraints([
+                    Constraint::Min(6),
+                    Constraint::Length(if app.mult_choice { 5 } else { 4 }),
+                ])
                 .split(middle_chunks[0]);
             let right_chunks = Layout::default()
                 .direction(Direction::Vertical)
@@ -76,7 +79,7 @@ pub fn run_results(
 
             let mut history_lines = Vec::new();
             if app.history.is_empty() {
-                history_lines.push(Line::from("No solved questions."));
+                history_lines.push(Line::from("No answered questions."));
             } else {
                 let count = app.history.len() as f64;
                 let mean = app
@@ -110,6 +113,17 @@ pub fn run_results(
                         Span::raw(format!("{:>3}. {:<18}  ", idx + 1, record.prompt)),
                         Span::styled(format!("{:>7}", format_elapsed(record.elapsed)), time_style),
                     ];
+                    if app.mult_choice {
+                        let (mark, color) = if record.correct {
+                            ("✓", Color::Green)
+                        } else {
+                            ("✗", Color::Red)
+                        };
+                        spans.push(Span::styled(
+                            format!("  {}", mark),
+                            Style::default().fg(color).add_modifier(Modifier::BOLD),
+                        ));
+                    }
                     if let Some(latency) = record.voice_latency {
                         spans.push(Span::styled(
                             format!("   voice {:>4}ms", latency.as_millis()),
@@ -160,10 +174,19 @@ pub fn run_results(
                     .sum::<f64>()
                     / count;
                 let stdev = variance.sqrt();
-                vec![
+                let mut lines = vec![
                     Line::from(format!("μ: {:.2}s", mean)),
                     Line::from(format!("σ: {:.2}s", stdev)),
-                ]
+                ];
+                if app.mult_choice {
+                    let correct = app.history.iter().filter(|r| r.correct).count();
+                    lines.push(Line::from(format!(
+                        "Correct: {}/{}",
+                        correct,
+                        app.history.len()
+                    )));
+                }
+                lines
             };
             let question_stats_widget = Paragraph::new(question_stats_lines).block(
                 Block::default()

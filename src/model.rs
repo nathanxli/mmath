@@ -1,6 +1,7 @@
 use std::time::{Duration, Instant};
 
 use rand::Rng;
+use rand::seq::SliceRandom;
 
 pub const ADD_MIN: i32 = 2;
 pub const MUL_MIN: i32 = 2;
@@ -35,11 +36,15 @@ enum Op {
 pub struct Question {
     pub prompt: String,
     answer: i32,
+    /// The 2x2 answer grid (one entry equals `answer`), present in
+    /// multiple-choice mode only.
+    pub options: Option<[i32; 4]>,
 }
 
 pub struct QuestionRecord {
     pub prompt: String,
     pub elapsed: Duration,
+    pub correct: bool,
     /// End-of-speech-to-answer latency (recognition + input pipeline),
     /// recorded for voice answers.
     pub voice_latency: Option<Duration>,
@@ -88,16 +93,49 @@ impl GameConfig {
     }
 }
 
+/// Build the 4-entry option set for a question: the answer plus 3 distinct
+/// distractors drawn from `candidates` (plausible slips for the operation),
+/// topped up with small random offsets if the candidates run out. All options
+/// stay >= 1 to match the range of generated answers.
+fn make_options<R: Rng>(rng: &mut R, answer: i32, candidates: &[i32]) -> [i32; 4] {
+    let mut options = vec![answer];
+    let mut pool = candidates.to_vec();
+    pool.shuffle(rng);
+    for value in pool {
+        if options.len() == 4 {
+            break;
+        }
+        if value >= 1 && !options.contains(&value) {
+            options.push(value);
+        }
+    }
+    while options.len() < 4 {
+        let delta = rng.random_range(1..=10);
+        let value = if rng.random_bool(0.5) {
+            answer + delta
+        } else {
+            answer - delta
+        };
+        if value >= 1 && !options.contains(&value) {
+            options.push(value);
+        }
+    }
+    options.shuffle(rng);
+    options.try_into().unwrap()
+}
+
 struct QuestionGenerator {
     rng: rand::rngs::ThreadRng,
     config: GameConfig,
+    mult_choice: bool,
 }
 
 impl QuestionGenerator {
-    fn new(config: GameConfig) -> Self {
+    fn new(config: GameConfig, mult_choice: bool) -> Self {
         Self {
             rng: rand::rng(),
             config,
+            mult_choice,
         }
     }
 
@@ -117,30 +155,34 @@ impl QuestionGenerator {
         }
         let op = enabled_ops[self.rng.random_range(0..enabled_ops.len())];
 
-        match op {
+        // Distractor candidates mimic plausible slips for the operation.
+        let (prompt, answer, candidates) = match op {
             Op::Add => {
                 let a = skewed_range(&mut self.rng, ADD_MIN, self.config.add_max);
                 let b = skewed_range(&mut self.rng, ADD_MIN, self.config.add_max);
-                Question {
-                    prompt: format!("{} + {} = ?", a, b),
-                    answer: a + b,
-                }
+                let ans = a + b;
+                let candidates = vec![
+                    ans - 1,
+                    ans + 1,
+                    ans - 2,
+                    ans + 2,
+                    ans - 10,
+                    ans + 10,
+                    ans + (a % 10) - (b % 10),
+                ];
+                (format!("{} + {} = ?", a, b), ans, candidates)
             }
             Op::Sub => {
                 let a = skewed_range(&mut self.rng, ADD_MIN, self.config.add_max);
                 let b = skewed_range(&mut self.rng, ADD_MIN, self.config.add_max);
                 let sum = a + b;
-                if self.rng.random_bool(0.5) {
-                    Question {
-                        prompt: format!("{} - {} = ?", sum, a),
-                        answer: b,
-                    }
+                let (sub, ans) = if self.rng.random_bool(0.5) {
+                    (a, b)
                 } else {
-                    Question {
-                        prompt: format!("{} - {} = ?", sum, b),
-                        answer: a,
-                    }
-                }
+                    (b, a)
+                };
+                let candidates = vec![ans - 1, ans + 1, ans - 2, ans + 2, ans - 10, ans + 10];
+                (format!("{} - {} = ?", sum, sub), ans, candidates)
             }
             Op::Mul => {
                 let a = self.rng.random_range(MUL_MIN..=self.config.mul_max_left);
@@ -150,27 +192,39 @@ impl QuestionGenerator {
                 } else {
                     (b, a)
                 };
-                Question {
-                    prompt: format!("{} * {} = ?", left, right),
-                    answer: a * b,
-                }
+                let ans = a * b;
+                // Off-by-one-operand errors keep a plausible last digit.
+                let candidates = vec![
+                    (a - 1) * b,
+                    (a + 1) * b,
+                    a * (b - 1),
+                    a * (b + 1),
+                    ans - 10,
+                    ans + 10,
+                ];
+                (format!("{} * {} = ?", left, right), ans, candidates)
             }
             Op::Div => {
                 let a = self.rng.random_range(MUL_MIN..=self.config.mul_max_left);
                 let b = self.rng.random_range(MUL_MIN..=self.config.mul_max_right);
                 let product = a * b;
-                if self.rng.random_bool(0.5) {
-                    Question {
-                        prompt: format!("{} / {} = ?", product, a),
-                        answer: b,
-                    }
+                let (div, ans) = if self.rng.random_bool(0.5) {
+                    (a, b)
                 } else {
-                    Question {
-                        prompt: format!("{} / {} = ?", product, b),
-                        answer: a,
-                    }
-                }
+                    (b, a)
+                };
+                let candidates = vec![ans - 1, ans + 1, ans - 2, ans + 2, ans - 3, ans + 3];
+                (format!("{} / {} = ?", product, div), ans, candidates)
             }
+        };
+
+        let options = self
+            .mult_choice
+            .then(|| make_options(&mut self.rng, answer, &candidates));
+        Question {
+            prompt,
+            answer,
+            options,
         }
     }
 }
@@ -182,15 +236,24 @@ pub struct App {
     question_started_at: Instant,
     pub history: Vec<QuestionRecord>,
     pub input: String,
-    pub score: usize,
+    pub score: i32,
     solved: usize,
     pub duration: Duration,
     started_at: Instant,
+    pub mult_choice: bool,
+    pub wrong_penalty: i32,
+    /// Highlighted cell in the multiple-choice grid (0=TL, 1=TR, 2=BL, 3=BR).
+    pub selected: usize,
 }
 
 impl App {
-    pub fn new(config: GameConfig, duration: Duration) -> Self {
-        let mut generator = QuestionGenerator::new(config.clone());
+    pub fn new(
+        config: GameConfig,
+        duration: Duration,
+        mult_choice: bool,
+        wrong_penalty: i32,
+    ) -> Self {
+        let mut generator = QuestionGenerator::new(config.clone(), mult_choice);
         let current = generator.next();
 
         Self {
@@ -204,6 +267,9 @@ impl App {
             solved: 0,
             duration,
             started_at: Instant::now(),
+            mult_choice,
+            wrong_penalty,
+            selected: 0,
         }
     }
 
@@ -223,6 +289,7 @@ impl App {
                 self.history.push(QuestionRecord {
                     prompt: self.current.prompt.clone(),
                     elapsed,
+                    correct: true,
                     voice_latency: None,
                 });
                 self.score += 1;
@@ -232,6 +299,30 @@ impl App {
                 self.input.clear();
             }
         }
+    }
+
+    /// Answer the current question with the option at `idx` (multiple-choice
+    /// mode). Records the outcome and advances regardless of correctness.
+    pub fn answer_with_option(&mut self, idx: usize) {
+        let Some(options) = self.current.options else {
+            return;
+        };
+        let correct = options[idx] == self.current.answer;
+        self.history.push(QuestionRecord {
+            prompt: self.current.prompt.clone(),
+            elapsed: self.question_started_at.elapsed(),
+            correct,
+            voice_latency: None,
+        });
+        if correct {
+            self.score += 1;
+            self.solved += 1;
+        } else {
+            self.score += self.wrong_penalty;
+        }
+        self.current = self.generator.next();
+        self.question_started_at = Instant::now();
+        self.selected = 0;
     }
 }
 
@@ -266,5 +357,32 @@ mod tests {
         // With SKEW_GAMMA > 1 the tails are lifted, so expect clearly more.
         let ratio = extreme as f64 / n as f64;
         assert!(ratio > 0.24, "expected boosted tails, got {}", ratio);
+    }
+
+    #[test]
+    fn make_options_distinct_positive_and_contains_answer() {
+        let mut rng = rand::rng();
+        for _ in 0..10_000 {
+            let answer = rng.random_range(2..=1200);
+            let candidates = [answer - 1, answer + 1, answer - 2, answer + 2];
+            let options = make_options(&mut rng, answer, &candidates);
+            assert!(options.contains(&answer), "answer missing: {:?}", options);
+            for (i, v) in options.iter().enumerate() {
+                assert!(*v >= 1, "non-positive option: {:?}", options);
+                assert!(
+                    !options[i + 1..].contains(v),
+                    "duplicate option: {:?}",
+                    options
+                );
+            }
+        }
+        // Smallest possible answer: positivity filter rejects most candidates,
+        // forcing the fallback fill to complete the set.
+        let options = make_options(&mut rng, 2, &[1, 0, -1]);
+        assert!(options.contains(&2));
+        for (i, v) in options.iter().enumerate() {
+            assert!(*v >= 1);
+            assert!(!options[i + 1..].contains(v));
+        }
     }
 }
