@@ -40,6 +40,9 @@ pub struct Question {
 pub struct QuestionRecord {
     pub prompt: String,
     pub elapsed: Duration,
+    /// Speech-start-to-answer latency, recorded only for voice answers in
+    /// --voice-check mode.
+    pub voice_latency: Option<Duration>,
 }
 
 #[derive(Clone)]
@@ -220,6 +223,7 @@ impl App {
                 self.history.push(QuestionRecord {
                     prompt: self.current.prompt.clone(),
                     elapsed,
+                    voice_latency: None,
                 });
                 self.score += 1;
                 self.solved += 1;

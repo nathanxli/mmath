@@ -2,6 +2,7 @@ mod game;
 mod model;
 mod results;
 mod setup;
+mod voice;
 
 use std::env;
 use std::error::Error;
@@ -13,16 +14,21 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use ratatui::widgets::Paragraph;
 
 use crate::game::run_game;
 use crate::model::App;
 use crate::results::{RecentAttempt, ResultsAction, run_results};
 use crate::setup::run_setup;
+use crate::voice::VoiceEngine;
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let use_small_text = env::args().any(|arg| arg == "-s");
+    let args: Vec<String> = env::args().skip(1).collect();
+    let use_small_text = args.iter().any(|arg| arg == "-s");
+    let voice_check = args.iter().any(|arg| arg == "--voice-check");
+    let voice_default = voice_check || args.iter().any(|arg| arg == "-v" || arg == "--voice");
     let mut terminal = init_terminal()?;
-    let result = run(&mut terminal, use_small_text);
+    let result = run(&mut terminal, use_small_text, voice_default, voice_check);
     restore_terminal(&mut terminal)?;
 
     match result {
@@ -38,10 +44,24 @@ fn main() -> Result<(), Box<dyn Error>> {
 fn run(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     use_small_text: bool,
+    voice_default: bool,
+    voice_check: bool,
 ) -> Result<Option<App>, Box<dyn Error>> {
-    let setup = match run_setup(terminal)? {
+    let setup = match run_setup(terminal, voice_default)? {
         Some(config) => config,
         None => return Ok(None),
+    };
+
+    let voice = if setup.voice_enabled {
+        terminal.draw(|frame| {
+            frame.render_widget(Paragraph::new("Loading voice model..."), frame.area());
+        })?;
+        let engine = VoiceEngine::start().map_err(|e| format!("voice setup failed: {}", e))?;
+        // Native libs may have written to stderr during load; force a repaint.
+        terminal.clear()?;
+        Some(engine)
+    } else {
+        None
     };
 
     let mut game_config = setup.game;
@@ -49,7 +69,14 @@ fn run(
     let mut recent_attempts: Vec<RecentAttempt> = Vec::new();
 
     loop {
-        let app = run_game(terminal, game_config.clone(), duration, use_small_text)?;
+        let app = run_game(
+            terminal,
+            game_config.clone(),
+            duration,
+            use_small_text,
+            voice.as_ref(),
+            voice_check,
+        )?;
         recent_attempts.push(RecentAttempt {
             score: app.score,
         });

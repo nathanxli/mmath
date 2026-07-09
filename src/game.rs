@@ -12,14 +12,27 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use tui_big_text::{BigText, PixelSize};
 
 use crate::model::{App, GameConfig};
+use crate::voice::VoiceEngine;
 
 pub fn run_game(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     config: GameConfig,
     duration: Duration,
     use_small_text: bool,
+    voice: Option<&VoiceEngine>,
+    voice_check: bool,
 ) -> Result<App, Box<dyn Error>> {
     let mut app = App::new(config, duration);
+    let mut voice_latencies: Vec<Duration> = Vec::new();
+
+    // Discard any recognition results left over from a previous round.
+    if let Some(engine) = voice {
+        while engine.events.try_recv().is_ok() {}
+    }
+
+    // With voice on, poll faster so a recognition result isn't stuck waiting
+    // out the keyboard poll (part of the speech-to-answer latency budget).
+    let poll_timeout = Duration::from_millis(if voice.is_some() { 15 } else { 50 });
 
     while !app.is_done() {
         terminal.draw(|frame| {
@@ -35,7 +48,7 @@ pub fn run_game(
                 .split(area);
 
             let timer = app.remaining().as_secs();
-            let header = Paragraph::new(Line::from(vec![
+            let mut header_spans = vec![
                 Span::raw("Time: "),
                 Span::styled(
                     format!("{}s", timer),
@@ -50,8 +63,22 @@ pub fn run_game(
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
                 ),
-            ]))
-            .block(Block::default().title("Mental Math").borders(Borders::ALL));
+            ];
+            if voice_check {
+                if let Some(last) = voice_latencies.last() {
+                    let avg = voice_latencies.iter().sum::<Duration>().as_millis()
+                        / voice_latencies.len() as u128;
+                    header_spans.push(Span::raw("    Voice: "));
+                    header_spans.push(Span::styled(
+                        format!("{}ms (avg {}ms)", last.as_millis(), avg),
+                        Style::default()
+                            .fg(Color::Magenta)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                }
+            }
+            let header = Paragraph::new(Line::from(header_spans))
+                .block(Block::default().title("Mental Math").borders(Borders::ALL));
             frame.render_widget(header, chunks[0]);
 
             if use_small_text {
@@ -83,15 +110,18 @@ pub fn run_game(
                 frame.render_widget(question, question_inner);
             }
 
+            let input_title = if voice.is_some() {
+                "Answer (Esc to quit, voice on)"
+            } else {
+                "Answer (Esc to quit)"
+            };
             let input = Paragraph::new(app.input.clone()).block(
-                Block::default()
-                    .title("Answer (Esc to quit)")
-                    .borders(Borders::ALL),
+                Block::default().title(input_title).borders(Borders::ALL),
             );
             frame.render_widget(input, chunks[2]);
         })?;
 
-        if event::poll(Duration::from_millis(50))? {
+        if event::poll(poll_timeout)? {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
                     KeyCode::Char(c) if c.is_ascii_digit() => {
@@ -110,6 +140,21 @@ pub fn run_game(
                     _ => {}
                 },
                 _ => {}
+            }
+        }
+
+        if let Some(engine) = voice {
+            while let Ok(event) = engine.events.try_recv() {
+                app.input = event.value.to_string();
+                let score_before = app.score;
+                app.try_advance_if_correct();
+                if voice_check && app.score > score_before {
+                    let latency = event.spoke_at.elapsed();
+                    voice_latencies.push(latency);
+                    if let Some(record) = app.history.last_mut() {
+                        record.voice_latency = Some(latency);
+                    }
+                }
             }
         }
     }

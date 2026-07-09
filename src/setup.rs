@@ -22,6 +22,7 @@ enum SetupField {
     MulHighLeft,
     MulHighRight,
     TimeSeconds,
+    Voice,
     Start,
 }
 
@@ -35,7 +36,8 @@ impl SetupField {
             SetupField::AddHigh => SetupField::MulHighLeft,
             SetupField::MulHighLeft => SetupField::MulHighRight,
             SetupField::MulHighRight => SetupField::TimeSeconds,
-            SetupField::TimeSeconds => SetupField::Start,
+            SetupField::TimeSeconds => SetupField::Voice,
+            SetupField::Voice => SetupField::Start,
             SetupField::Start => SetupField::AddMode,
         }
     }
@@ -50,7 +52,8 @@ impl SetupField {
             SetupField::MulHighLeft => SetupField::AddHigh,
             SetupField::MulHighRight => SetupField::MulHighLeft,
             SetupField::TimeSeconds => SetupField::MulHighRight,
-            SetupField::Start => SetupField::TimeSeconds,
+            SetupField::Voice => SetupField::TimeSeconds,
+            SetupField::Start => SetupField::Voice,
         }
     }
 }
@@ -58,6 +61,7 @@ impl SetupField {
 pub struct SetupConfig {
     pub game: GameConfig,
     pub duration: Duration,
+    pub voice_enabled: bool,
 }
 
 struct SetupState {
@@ -74,11 +78,12 @@ struct SetupState {
     mul_high_right_edited: bool,
     time_input: String,
     time_edited: bool,
+    voice_enabled: bool,
     message: String,
 }
 
 impl SetupState {
-    fn new() -> Self {
+    fn new(voice_default: bool) -> Self {
         Self {
             focus: SetupField::AddMode,
             add_enabled: true,
@@ -93,6 +98,7 @@ impl SetupState {
             mul_high_right_edited: false,
             time_input: String::from("120"),
             time_edited: false,
+            voice_enabled: voice_default,
             message: String::from("Set ranges and time, then start."),
         }
     }
@@ -111,6 +117,7 @@ impl SetupState {
                 Some((&mut self.mul_high_right_input, &mut self.mul_high_right_edited))
             }
             SetupField::TimeSeconds => Some((&mut self.time_input, &mut self.time_edited)),
+            SetupField::Voice => None,
             SetupField::Start => None,
         }
     }
@@ -131,6 +138,10 @@ impl SetupState {
             }
             SetupField::DivMode => {
                 self.div_enabled = !self.div_enabled;
+                true
+            }
+            SetupField::Voice => {
+                self.voice_enabled = !self.voice_enabled;
                 true
             }
             _ => false,
@@ -171,14 +182,16 @@ impl SetupState {
         Ok(SetupConfig {
             game: config,
             duration: Duration::from_secs(time_seconds),
+            voice_enabled: self.voice_enabled,
         })
     }
 }
 
 pub fn run_setup(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    voice_default: bool,
 ) -> Result<Option<SetupConfig>, Box<dyn Error>> {
-    let mut setup = SetupState::new();
+    let mut setup = SetupState::new(voice_default);
 
     loop {
         terminal.draw(|frame| {
@@ -216,6 +229,7 @@ pub fn run_setup(
                     setup.time_input.as_str(),
                     setup.focus == SetupField::TimeSeconds,
                 ),
+                voice_line(setup.voice_enabled, setup.focus == SetupField::Voice),
                 Line::from(""),
                 start_line(setup.focus == SetupField::Start),
             ];
@@ -387,6 +401,20 @@ fn multiplication_range_line(
             },
         ),
         Span::raw(")"),
+    ])
+}
+
+fn voice_line(enabled: bool, focused: bool) -> Line<'static> {
+    let label_style = if focused {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+    };
+    Line::from(vec![
+        Span::styled("Voice input: ", label_style),
+        mode_span("mic", enabled, focused),
     ])
 }
 

@@ -104,10 +104,17 @@ pub fn run_results(
                     } else {
                         Style::default()
                     };
-                    history_lines.push(Line::from(vec![
+                    let mut spans = vec![
                         Span::raw(format!("{:>3}. {:<18}  ", idx + 1, record.prompt)),
                         Span::styled(format_elapsed(record.elapsed), time_style),
-                    ]));
+                    ];
+                    if let Some(latency) = record.voice_latency {
+                        spans.push(Span::styled(
+                            format!("  voice {}ms", latency.as_millis()),
+                            Style::default().fg(Color::Magenta),
+                        ));
+                    }
+                    history_lines.push(Line::from(spans));
                 }
             }
 
