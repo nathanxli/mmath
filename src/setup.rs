@@ -2,10 +2,14 @@ use std::error::Error;
 use std::io;
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton,
+    MouseEventKind,
+};
+use crossterm::execute;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Padding, Paragraph};
@@ -254,61 +258,55 @@ pub fn run_setup(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     setup: &mut SetupState,
 ) -> Result<Option<SetupConfig>, Box<dyn Error>> {
+    // Capture the mouse so setup rows/cells are clickable, mirroring the
+    // multiple-choice grid in game.rs. Disable it on every exit path so normal
+    // terminal text selection keeps working elsewhere.
+    execute!(io::stdout(), EnableMouseCapture)?;
+    let outcome = run_setup_loop(terminal, setup);
+    let _ = execute!(io::stdout(), DisableMouseCapture);
+    outcome
+}
+
+fn run_setup_loop(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    setup: &mut SetupState,
+) -> Result<Option<SetupConfig>, Box<dyn Error>> {
     loop {
+        // Screen regions of clickable controls from the last frame, for click
+        // hit-testing. Rebuilt every frame; layout is deterministic so the
+        // previous frame's rects are valid for the click that follows.
+        let mut click_targets: Vec<(Rect, SetupField)> = Vec::new();
+
         terminal.draw(|frame| {
             let area = frame.area();
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .margin(1)
-                .constraints([Constraint::Min(10), Constraint::Length(3)])
+                .constraints([
+                    Constraint::Length(1),  // help line
+                    Constraint::Min(11),    // two-column body
+                    Constraint::Length(3),  // Start button
+                    Constraint::Length(3),  // status bar
+                ])
                 .split(area);
 
-            let lines = vec![
-                Line::from("Press Enter on Start (or 's') to begin. Esc cancels."),
-                Line::from("Up/Down (or j/k) to move. Space toggles modes."),
-                Line::from(""),
-                modes_line(
-                    setup.add_enabled,
-                    setup.sub_enabled,
-                    setup.mul_enabled,
-                    setup.div_enabled,
-                    setup.focus,
-                ),
-                field_line(
-                    "Addition range",
-                    &format!("{} to {}", ADD_MIN, setup.add_high_input),
-                    setup.focus == SetupField::AddHigh,
-                ),
-                multiplication_range_line(
-                    setup.mul_high_left_input.as_str(),
-                    setup.mul_high_right_input.as_str(),
-                    setup.focus == SetupField::MulHighLeft,
-                    setup.focus == SetupField::MulHighRight,
-                ),
-                field_line(
-                    "Time (seconds)",
-                    setup.time_input.as_str(),
-                    setup.focus == SetupField::TimeSeconds,
-                ),
-                large_text_line(setup.large_text, setup.focus == SetupField::LargeText),
-                voice_line(setup.voice_enabled, setup.focus == SetupField::Voice),
-                mult_choice_line(setup.mult_choice, setup.focus == SetupField::MultChoice),
-                penalty_line(
-                    setup.penalize_wrong,
-                    setup.focus == SetupField::WrongPenalty,
-                    setup.mult_choice,
-                ),
-                Line::from(""),
-                start_line(setup.focus == SetupField::Start),
-            ];
+            let help = Paragraph::new(
+                "Click a control, or use Up/Down (j/k) + Space/Enter. Digits edit ranges. \
+                 's' starts, Esc cancels.",
+            )
+            .style(Style::default().fg(Color::DarkGray));
+            frame.render_widget(help, chunks[0]);
 
-            let setup_widget = Paragraph::new(lines).block(
-                Block::default()
-                    .title("Game Parameters")
-                    .borders(Borders::ALL)
-                    .padding(Padding::left(1)),
-            );
-            frame.render_widget(setup_widget, chunks[0]);
+            let columns = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(chunks[1]);
+
+            render_left_column(frame, columns[0], setup, &mut click_targets);
+            render_right_column(frame, columns[1], setup, &mut click_targets);
+
+            render_start_button(frame, chunks[2], setup.focus == SetupField::Start);
+            click_targets.push((chunks[2], SetupField::Start));
 
             let status = Paragraph::new(setup.message.as_str()).block(
                 Block::default()
@@ -317,7 +315,7 @@ pub fn run_setup(
                     .padding(Padding::left(1))
                     .border_style(Style::default().fg(Color::DarkGray)),
             );
-            frame.render_widget(status, chunks[1]);
+            frame.render_widget(status, chunks[3]);
         })?;
 
         if event::poll(Duration::from_millis(50))? {
@@ -359,62 +357,258 @@ pub fn run_setup(
                     KeyCode::Esc => return Ok(None),
                     _ => {}
                 },
+                Event::Mouse(mouse)
+                    if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) =>
+                {
+                    if let Some(&(_, field)) = click_targets
+                        .iter()
+                        .find(|(rect, _)| rect.contains(Position::new(mouse.column, mouse.row)))
+                    {
+                        // A click focuses the target. Toggles flip immediately;
+                        // Start begins the game; numeric fields just take focus
+                        // so the keyboard can edit them.
+                        setup.focus = field;
+                        if field == SetupField::Start {
+                            match setup.parse_config() {
+                                Ok(config) => return Ok(Some(config)),
+                                Err(msg) => setup.message = msg.to_string(),
+                            }
+                        } else {
+                            setup.toggle_focused_mode();
+                        }
+                    }
+                }
                 _ => {}
             }
         }
     }
 }
 
-fn field_line(label: &str, value: &str, focused: bool) -> Line<'static> {
-    let label_style = if focused {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
-    Line::from(vec![
-        Span::styled(format!("{}: ", label), label_style),
-        Span::styled(
-            value.to_string(),
-            if focused {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-            } else {
-                Style::default()
-            },
+/// Left column: the 2x2 operations grid stacked above the numeric ranges.
+fn render_left_column(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    setup: &SetupState,
+    click_targets: &mut Vec<(Rect, SetupField)>,
+) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(8), Constraint::Min(5)])
+        .split(area);
+
+    // --- Operations: 2x2 clickable grid, mirroring the answer grid. ---
+    let ops_block = Block::default().title("Operations").borders(Borders::ALL);
+    let ops_inner = ops_block.inner(rows[0]);
+    frame.render_widget(ops_block, rows[0]);
+
+    let ops_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Length(3)])
+        .split(ops_inner);
+
+    let cells = [
+        ("+", setup.add_enabled, SetupField::AddMode),
+        ("-", setup.sub_enabled, SetupField::SubMode),
+        ("*", setup.mul_enabled, SetupField::MulMode),
+        ("/", setup.div_enabled, SetupField::DivMode),
+    ];
+    for (idx, &(symbol, enabled, field)) in cells.iter().enumerate() {
+        let halves = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+            .split(ops_rows[idx / 2]);
+        let cell_area = halves[idx % 2];
+        let focused = setup.focus == field;
+
+        // Border shows focus (yellow); the inner text shows on/off (green/red).
+        let border_color = if focused {
+            Color::Yellow
+        } else if enabled {
+            Color::Green
+        } else {
+            Color::Red
+        };
+        let cell_block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border_color));
+        let cell_inner = cell_block.inner(cell_area);
+        frame.render_widget(cell_block, cell_area);
+        frame.render_widget(
+            Paragraph::new(Line::from(mode_span(symbol, enabled, focused)))
+                .alignment(Alignment::Center),
+            cell_inner,
+        );
+        click_targets.push((cell_area, field));
+    }
+
+    // --- Ranges: one clickable numeric row per field. ---
+    let ranges_block = Block::default()
+        .title("Ranges")
+        .borders(Borders::ALL)
+        .padding(Padding::left(1));
+    let ranges_inner = ranges_block.inner(rows[1]);
+    frame.render_widget(ranges_block, rows[1]);
+
+    let range_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(ranges_inner);
+
+    let ranges = [
+        (
+            "Addition",
+            ADD_MIN,
+            setup.add_high_input.as_str(),
+            SetupField::AddHigh,
         ),
+        (
+            "Mult ×a",
+            MUL_MIN,
+            setup.mul_high_left_input.as_str(),
+            SetupField::MulHighLeft,
+        ),
+        (
+            "Mult ×b",
+            MUL_MIN,
+            setup.mul_high_right_input.as_str(),
+            SetupField::MulHighRight,
+        ),
+    ];
+    for (idx, &(label, low, value, field)) in ranges.iter().enumerate() {
+        let focused = setup.focus == field;
+        frame.render_widget(
+            Paragraph::new(range_line(label, low, value, focused)),
+            range_rows[idx],
+        );
+        click_targets.push((range_rows[idx], field));
+    }
+}
+
+/// Right column: the on/off options stacked above the time field.
+fn render_right_column(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    setup: &SetupState,
+    click_targets: &mut Vec<(Rect, SetupField)>,
+) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(6), Constraint::Length(3), Constraint::Min(0)])
+        .split(area);
+
+    // --- Options: one clickable toggle per row. ---
+    let opts_block = Block::default()
+        .title("Options")
+        .borders(Borders::ALL)
+        .padding(Padding::left(1));
+    let opts_inner = opts_block.inner(rows[0]);
+    frame.render_widget(opts_block, rows[0]);
+
+    let opt_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .split(opts_inner);
+
+    let option_lines = [
+        (
+            large_text_line(setup.large_text, setup.focus == SetupField::LargeText),
+            SetupField::LargeText,
+        ),
+        (
+            voice_line(setup.voice_enabled, setup.focus == SetupField::Voice),
+            SetupField::Voice,
+        ),
+        (
+            mult_choice_line(setup.mult_choice, setup.focus == SetupField::MultChoice),
+            SetupField::MultChoice,
+        ),
+        (
+            penalty_line(
+                setup.penalize_wrong,
+                setup.focus == SetupField::WrongPenalty,
+                setup.mult_choice,
+            ),
+            SetupField::WrongPenalty,
+        ),
+    ];
+    for (idx, (line, field)) in option_lines.into_iter().enumerate() {
+        frame.render_widget(Paragraph::new(line), opt_rows[idx]);
+        click_targets.push((opt_rows[idx], field));
+    }
+
+    // --- Time. ---
+    let time_block = Block::default()
+        .title("Time (seconds)")
+        .borders(Borders::ALL)
+        .padding(Padding::left(1));
+    let time_inner = time_block.inner(rows[1]);
+    frame.render_widget(time_block, rows[1]);
+    frame.render_widget(
+        Paragraph::new(value_line(
+            setup.time_input.as_str(),
+            setup.focus == SetupField::TimeSeconds,
+        )),
+        time_inner,
+    );
+    click_targets.push((rows[1], SetupField::TimeSeconds));
+}
+
+fn render_start_button(frame: &mut ratatui::Frame, area: Rect, focused: bool) {
+    let border_color = if focused { Color::Yellow } else { Color::Green };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(border_color));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut style = Style::default()
+        .fg(Color::Green)
+        .add_modifier(Modifier::BOLD);
+    if focused {
+        style = style.add_modifier(Modifier::UNDERLINED);
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled("▶  START", style))).alignment(Alignment::Center),
+        inner,
+    );
+}
+
+/// Label + value styles for a numeric field, highlighted when focused.
+fn field_styles(focused: bool) -> (Style, Style) {
+    if focused {
+        (
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+        )
+    } else {
+        (Style::default(), Style::default())
+    }
+}
+
+fn range_line(label: &str, low: i32, value: &str, focused: bool) -> Line<'static> {
+    let (label_style, value_style) = field_styles(focused);
+    Line::from(vec![
+        Span::styled(format!("{:<9}{} – ", label, low), label_style),
+        Span::styled(format!("[{}]", value), value_style),
     ])
 }
 
-fn modes_line(
-    add_on: bool,
-    sub_on: bool,
-    mul_on: bool,
-    div_on: bool,
-    focused: SetupField,
-) -> Line<'static> {
-    let label_style = if matches!(
-        focused,
-        SetupField::AddMode | SetupField::SubMode | SetupField::MulMode | SetupField::DivMode
-    ) {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
-    Line::from(vec![
-        Span::styled("Modes: ", label_style),
-        mode_span("+", add_on, focused == SetupField::AddMode),
-        Span::raw("  "),
-        mode_span("-", sub_on, focused == SetupField::SubMode),
-        Span::raw("  "),
-        mode_span("*", mul_on, focused == SetupField::MulMode),
-        Span::raw("  "),
-        mode_span("/", div_on, focused == SetupField::DivMode),
-    ])
+fn value_line(value: &str, focused: bool) -> Line<'static> {
+    let (_, value_style) = field_styles(focused);
+    Line::from(Span::styled(format!("[{}]", value), value_style))
 }
 
 fn mode_span(symbol: &str, enabled: bool, focused: bool) -> Span<'static> {
@@ -426,50 +620,12 @@ fn mode_span(symbol: &str, enabled: bool, focused: bool) -> Span<'static> {
     if focused {
         style = style.add_modifier(Modifier::UNDERLINED);
     }
-    Span::styled(format!("{} [{}]", symbol, if enabled { "on" } else { "off" }), style)
-}
-
-fn multiplication_range_line(
-    left: &str,
-    right: &str,
-    left_focused: bool,
-    right_focused: bool,
-) -> Line<'static> {
-    let label_focused = left_focused || right_focused;
-    let label_style = if label_focused {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
+    let text = if symbol.is_empty() {
+        format!("[{}]", if enabled { "on" } else { "off" })
     } else {
-        Style::default()
+        format!("{} [{}]", symbol, if enabled { "on" } else { "off" })
     };
-    let focused_style = Style::default()
-        .fg(Color::Yellow)
-        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED);
-
-    Line::from(vec![
-        Span::styled("Multiplication range: ", label_style),
-        Span::raw(format!("({} to ", MUL_MIN)),
-        Span::styled(
-            left.to_string(),
-            if left_focused {
-                focused_style
-            } else {
-                Style::default()
-            },
-        ),
-        Span::raw(") x ("),
-        Span::raw(format!("{} to ", MUL_MIN)),
-        Span::styled(
-            right.to_string(),
-            if right_focused {
-                focused_style
-            } else {
-                Style::default()
-            },
-        ),
-        Span::raw(")"),
-    ])
+    Span::styled(text, style)
 }
 
 fn large_text_line(enabled: bool, focused: bool) -> Line<'static> {
@@ -481,7 +637,7 @@ fn large_text_line(enabled: bool, focused: bool) -> Line<'static> {
         Style::default()
     };
     Line::from(vec![
-        Span::styled("Large text:", label_style),
+        Span::styled("Large text:   ", label_style),
         mode_span("", enabled, focused),
     ])
 }
@@ -495,8 +651,8 @@ fn voice_line(enabled: bool, focused: bool) -> Line<'static> {
             dim
         };
         return Line::from(vec![
-            Span::styled("Voice input:", label_style),
-            Span::styled("  [ ]  (rebuild with --features voice)", dim),
+            Span::styled("Voice input:  ", label_style),
+            Span::styled("[ ]  (--features voice)", dim),
         ]);
     }
     let label_style = if focused {
@@ -507,7 +663,7 @@ fn voice_line(enabled: bool, focused: bool) -> Line<'static> {
         Style::default()
     };
     Line::from(vec![
-        Span::styled("Voice input:", label_style),
+        Span::styled("Voice input:  ", label_style),
         mode_span("", enabled, focused),
     ])
 }
@@ -521,7 +677,7 @@ fn mult_choice_line(enabled: bool, focused: bool) -> Line<'static> {
         Style::default()
     };
     Line::from(vec![
-        Span::styled("Multiple choice:", label_style),
+        Span::styled("Mult choice:  ", label_style),
         mode_span("", enabled, focused),
     ])
 }
@@ -537,22 +693,9 @@ fn penalty_line(enabled: bool, focused: bool, mult_choice_on: bool) -> Line<'sta
         Style::default()
     };
     Line::from(vec![
-        Span::styled("Wrong answer penalty: ", label_style),
-        mode_span("-1", enabled, focused),
+        Span::styled("Penalty −1:   ", label_style),
+        mode_span("", enabled, focused),
     ])
-}
-
-fn start_line(focused: bool) -> Line<'static> {
-    let style = if focused {
-        Style::default()
-            .fg(Color::Green)
-            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED)
-    } else {
-        Style::default()
-            .fg(Color::Green)
-            .add_modifier(Modifier::BOLD)
-    };
-    Line::from(Span::styled("Start", style))
 }
 
 #[cfg(test)]
@@ -606,7 +749,7 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect();
         assert!(
-            rendered.contains("rebuild with --features voice"),
+            rendered.contains("--features voice"),
             "{rendered}"
         );
     }
