@@ -1,6 +1,7 @@
 mod game;
 mod model;
 mod results;
+mod sequences;
 mod setup;
 mod voice;
 

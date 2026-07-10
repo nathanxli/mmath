@@ -10,7 +10,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Padding, Paragraph};
 
-use crate::model::{ADD_MIN, App, MUL_MIN};
+use crate::model::{ADD_MIN, App, GameMode, MUL_MIN};
 
 pub enum ResultsAction {
     Restart,
@@ -49,17 +49,21 @@ pub fn run_results(
                 ])
                 .split(area);
 
-            let summary = vec![
-                Line::from(format!(
+            let mut summary = vec![Line::from(format!("Gamemode: {}", app.config.mode.title()))];
+            if app.config.mode == GameMode::MentalMath {
+                summary.push(Line::from(format!(
                     "Addition range: {} to {}",
                     ADD_MIN, app.config.add_max
-                )),
-                Line::from(format!(
+                )));
+                summary.push(Line::from(format!(
                     "Multiplication range: ({} to {}) x ({} to {})",
                     MUL_MIN, app.config.mul_max_left, MUL_MIN, app.config.mul_max_right
-                )),
-                Line::from(format!("Time: {} seconds", app.duration.as_secs())),
-            ];
+                )));
+            }
+            summary.push(Line::from(format!(
+                "Time: {} seconds",
+                app.duration.as_secs()
+            )));
 
             let summary_widget = Paragraph::new(summary).block(
                 Block::default()
@@ -96,6 +100,15 @@ pub fn run_results(
             if let Some((mean, stdev)) = time_stats {
                 // Flag answers that took unusually long for this session.
                 let threshold = mean + (2.0 * stdev);
+                // Prompt column sized to the longest prompt so times line up
+                // even for long sequence prompts.
+                let prompt_width = app
+                    .history
+                    .iter()
+                    .map(|record| record.prompt.chars().count())
+                    .max()
+                    .unwrap_or(0)
+                    .max(18);
                 for (idx, record) in app.history.iter().enumerate() {
                     let elapsed = record.elapsed.as_secs_f64();
                     let time_style = if elapsed > threshold {
@@ -106,7 +119,12 @@ pub fn run_results(
                     // Fixed-width columns so times line up across rows,
                     // including rows without voice data.
                     let mut spans = vec![
-                        Span::raw(format!("{:>3}. {:<18}  ", idx + 1, record.prompt)),
+                        Span::raw(format!(
+                            "{:>3}. {:<width$}  ",
+                            idx + 1,
+                            record.prompt,
+                            width = prompt_width
+                        )),
                         Span::styled(format!("{:>7}", format_elapsed(record.elapsed)), time_style),
                     ];
                     if app.mult_choice {

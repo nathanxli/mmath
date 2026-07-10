@@ -91,30 +91,31 @@ pub fn run_game(
                         .add_modifier(Modifier::BOLD),
                 ));
             }
-            let header = Paragraph::new(Line::from(header_spans))
-                .block(Block::default().title("Mental Math").borders(Borders::ALL));
+            let header = Paragraph::new(Line::from(header_spans)).block(
+                Block::default()
+                    .title(app.config.mode.title())
+                    .borders(Borders::ALL),
+            );
             frame.render_widget(header, chunks[0]);
 
-            if use_small_text {
-                let question = Paragraph::new(app.current.prompt.clone())
-                    .block(
-                        Block::default()
-                            .title("Question")
-                            .borders(Borders::ALL)
-                            .border_style(Style::default().fg(Color::Reset))
-                            .style(Style::default().fg(Color::Reset)),
-                    )
-                    .alignment(Alignment::Center);
-                frame.render_widget(question, chunks[1]);
-            } else {
-                let question_block = Block::default()
-                    .title("Question")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Reset))
-                    .style(Style::default().fg(Color::Reset));
-                let question_inner = question_block.inner(chunks[1]);
-                frame.render_widget(question_block, chunks[1]);
+            let question_block = Block::default()
+                .title("Question")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Reset))
+                .style(Style::default().fg(Color::Reset));
+            let question_inner = question_block.inner(chunks[1]);
+            frame.render_widget(question_block, chunks[1]);
 
+            // Big glyphs are 8 columns per character; long prompts (sequences)
+            // fall back to plain text rather than overflowing the box.
+            let big_fits =
+                app.current.prompt.chars().count() as u16 * 8 <= question_inner.width;
+            if use_small_text || !big_fits {
+                let question = Paragraph::new(format!("\n{}", app.current.prompt))
+                    .alignment(Alignment::Center)
+                    .style(Style::default().add_modifier(Modifier::BOLD));
+                frame.render_widget(question, question_inner);
+            } else {
                 let question = BigText::builder()
                     .pixel_size(PixelSize::HalfHeight)
                     .centered()

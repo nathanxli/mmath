@@ -3,6 +3,8 @@ use std::time::{Duration, Instant};
 use rand::Rng;
 use rand::seq::SliceRandom;
 
+use crate::sequences;
+
 pub const ADD_MIN: i32 = 2;
 pub const MUL_MIN: i32 = 2;
 
@@ -33,6 +35,21 @@ enum Op {
     Div,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum GameMode {
+    MentalMath,
+    Sequences,
+}
+
+impl GameMode {
+    pub fn title(self) -> &'static str {
+        match self {
+            GameMode::MentalMath => "Mental Math",
+            GameMode::Sequences => "Sequences",
+        }
+    }
+}
+
 pub struct Question {
     pub prompt: String,
     answer: i32,
@@ -52,6 +69,7 @@ pub struct QuestionRecord {
 
 #[derive(Clone)]
 pub struct GameConfig {
+    pub mode: GameMode,
     pub add_max: i32,
     pub mul_max_left: i32,
     pub mul_max_right: i32,
@@ -81,9 +99,10 @@ impl GameConfig {
 
 /// Build the 4-entry option set for a question: the answer plus 3 distinct
 /// distractors drawn from `candidates` (plausible slips for the operation),
-/// topped up with small random offsets if the candidates run out. All options
-/// stay >= 1 to match the range of generated answers.
-fn make_options<R: Rng>(rng: &mut R, answer: i32, candidates: &[i32]) -> [i32; 4] {
+/// topped up with small random offsets if the candidates run out. Options
+/// below `min_value` are rejected (mental math answers are always >= 1;
+/// sequences may go negative).
+fn make_options<R: Rng>(rng: &mut R, answer: i32, candidates: &[i32], min_value: i32) -> [i32; 4] {
     let mut options = vec![answer];
     let mut pool = candidates.to_vec();
     pool.shuffle(rng);
@@ -91,7 +110,7 @@ fn make_options<R: Rng>(rng: &mut R, answer: i32, candidates: &[i32]) -> [i32; 4
         if options.len() == 4 {
             break;
         }
-        if value >= 1 && !options.contains(&value) {
+        if value >= min_value && !options.contains(&value) {
             options.push(value);
         }
     }
@@ -102,7 +121,7 @@ fn make_options<R: Rng>(rng: &mut R, answer: i32, candidates: &[i32]) -> [i32; 4
         } else {
             answer - delta
         };
-        if value >= 1 && !options.contains(&value) {
+        if value >= min_value && !options.contains(&value) {
             options.push(value);
         }
     }
@@ -126,6 +145,25 @@ impl QuestionGenerator {
     }
 
     fn next(&mut self) -> Question {
+        match self.config.mode {
+            GameMode::MentalMath => self.next_mental_math(),
+            GameMode::Sequences => self.next_sequence(),
+        }
+    }
+
+    fn next_sequence(&mut self) -> Question {
+        let seq = sequences::generate(&mut self.rng);
+        let options = self
+            .mult_choice
+            .then(|| make_options(&mut self.rng, seq.answer, &seq.candidates, i32::MIN));
+        Question {
+            prompt: seq.prompt,
+            answer: seq.answer,
+            options,
+        }
+    }
+
+    fn next_mental_math(&mut self) -> Question {
         let mut enabled_ops = Vec::with_capacity(4);
         if self.config.add_enabled {
             enabled_ops.push(Op::Add);
@@ -206,7 +244,7 @@ impl QuestionGenerator {
 
         let options = self
             .mult_choice
-            .then(|| make_options(&mut self.rng, answer, &candidates));
+            .then(|| make_options(&mut self.rng, answer, &candidates, 1));
         Question {
             prompt,
             answer,
@@ -343,7 +381,7 @@ mod tests {
         for _ in 0..10_000 {
             let answer = rng.random_range(2..=1200);
             let candidates = [answer - 1, answer + 1, answer - 2, answer + 2];
-            let options = make_options(&mut rng, answer, &candidates);
+            let options = make_options(&mut rng, answer, &candidates, 1);
             assert!(options.contains(&answer), "answer missing: {:?}", options);
             for (i, v) in options.iter().enumerate() {
                 assert!(*v >= 1, "non-positive option: {:?}", options);
@@ -356,11 +394,50 @@ mod tests {
         }
         // Smallest possible answer: positivity filter rejects most candidates,
         // forcing the fallback fill to complete the set.
-        let options = make_options(&mut rng, 2, &[1, 0, -1]);
+        let options = make_options(&mut rng, 2, &[1, 0, -1], 1);
         assert!(options.contains(&2));
         for (i, v) in options.iter().enumerate() {
             assert!(*v >= 1);
             assert!(!options[i + 1..].contains(v));
+        }
+    }
+
+    #[test]
+    fn make_options_allows_negative_values_for_sequences() {
+        let mut rng = rand::rng();
+        for _ in 0..1_000 {
+            let answer = rng.random_range(-100..=-2);
+            let candidates = [answer - 1, answer + 1, answer - 2, answer + 2];
+            let options = make_options(&mut rng, answer, &candidates, i32::MIN);
+            assert!(options.contains(&answer), "answer missing: {:?}", options);
+            for (i, v) in options.iter().enumerate() {
+                assert!(
+                    !options[i + 1..].contains(v),
+                    "duplicate option: {:?}",
+                    options
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sequence_mode_generates_sequence_questions() {
+        let config = GameConfig {
+            mode: GameMode::Sequences,
+            add_max: 100,
+            mul_max_left: 12,
+            mul_max_right: 100,
+            add_enabled: true,
+            sub_enabled: true,
+            mul_enabled: true,
+            div_enabled: true,
+        };
+        let mut generator = QuestionGenerator::new(config, true);
+        for _ in 0..1_000 {
+            let q = generator.next();
+            assert!(q.prompt.ends_with(", ?"), "bad prompt: {:?}", q.prompt);
+            let options = q.options.expect("multiple choice options");
+            assert!(options.contains(&q.answer));
         }
     }
 }

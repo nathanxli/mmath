@@ -14,11 +14,12 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Padding, Paragraph};
 
-use crate::model::{ADD_MIN, GameConfig, MUL_MIN};
+use crate::model::{ADD_MIN, GameConfig, GameMode, MUL_MIN};
 use crate::voice;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SetupField {
+    GameMode,
     AddMode,
     SubMode,
     MulMode,
@@ -37,6 +38,7 @@ enum SetupField {
 impl SetupField {
     fn next(self) -> Self {
         match self {
+            SetupField::GameMode => SetupField::AddMode,
             SetupField::AddMode => SetupField::SubMode,
             SetupField::SubMode => SetupField::MulMode,
             SetupField::MulMode => SetupField::DivMode,
@@ -49,13 +51,14 @@ impl SetupField {
             SetupField::Voice => SetupField::MultChoice,
             SetupField::MultChoice => SetupField::WrongPenalty,
             SetupField::WrongPenalty => SetupField::Start,
-            SetupField::Start => SetupField::AddMode,
+            SetupField::Start => SetupField::GameMode,
         }
     }
 
     fn prev(self) -> Self {
         match self {
-            SetupField::AddMode => SetupField::Start,
+            SetupField::GameMode => SetupField::Start,
+            SetupField::AddMode => SetupField::GameMode,
             SetupField::SubMode => SetupField::AddMode,
             SetupField::MulMode => SetupField::SubMode,
             SetupField::DivMode => SetupField::MulMode,
@@ -83,6 +86,7 @@ pub struct SetupConfig {
 
 pub struct SetupState {
     focus: SetupField,
+    mode: GameMode,
     add_enabled: bool,
     sub_enabled: bool,
     mul_enabled: bool,
@@ -106,7 +110,8 @@ impl SetupState {
     pub fn new(voice_default: bool, mult_choice_default: bool, large_text_default: bool) -> Self {
         let voice_wanted = voice_default && !mult_choice_default;
         Self {
-            focus: SetupField::AddMode,
+            focus: SetupField::GameMode,
+            mode: GameMode::MentalMath,
             add_enabled: true,
             sub_enabled: true,
             mul_enabled: true,
@@ -142,6 +147,7 @@ impl SetupState {
 
     fn active_input_mut(&mut self) -> Option<(&mut String, &mut bool)> {
         match self.focus {
+            SetupField::GameMode => None,
             SetupField::AddMode => None,
             SetupField::SubMode => None,
             SetupField::MulMode => None,
@@ -164,6 +170,16 @@ impl SetupState {
 
     fn toggle_focused_mode(&mut self) -> bool {
         match self.focus {
+            SetupField::GameMode => {
+                self.mode = match self.mode {
+                    GameMode::MentalMath => GameMode::Sequences,
+                    GameMode::Sequences => GameMode::MentalMath,
+                };
+                if self.mode != GameMode::MentalMath {
+                    self.voice_enabled = false;
+                }
+                true
+            }
             SetupField::AddMode => {
                 self.add_enabled = !self.add_enabled;
                 true
@@ -189,6 +205,10 @@ impl SetupState {
                     self.message = String::from(voice::UNSUPPORTED);
                     return true;
                 }
+                if self.mode != GameMode::MentalMath {
+                    self.message = String::from("Voice input is only available in Mental Math.");
+                    return true;
+                }
                 self.voice_enabled = !self.voice_enabled;
                 if self.voice_enabled {
                     self.mult_choice = false;
@@ -211,18 +231,6 @@ impl SetupState {
     }
 
     fn parse_config(&self) -> Result<SetupConfig, &'static str> {
-        let add_max = self
-            .add_high_input
-            .parse::<i32>()
-            .map_err(|_| "Addition high end must be a whole number.")?;
-        let mul_max_left = self
-            .mul_high_left_input
-            .parse::<i32>()
-            .map_err(|_| "Left multiplication high end must be a whole number.")?;
-        let mul_max_right = self
-            .mul_high_right_input
-            .parse::<i32>()
-            .map_err(|_| "Right multiplication high end must be a whole number.")?;
         let time_seconds = self
             .time_input
             .parse::<u64>()
@@ -231,20 +239,50 @@ impl SetupState {
             return Err("Time must be at least 1 second.");
         }
 
-        let config = GameConfig {
-            add_max,
-            mul_max_left,
-            mul_max_right,
-            add_enabled: self.add_enabled,
-            sub_enabled: self.sub_enabled,
-            mul_enabled: self.mul_enabled,
-            div_enabled: self.div_enabled,
+        // Operation toggles and ranges only apply to Mental Math; other modes
+        // use defaults so a stray range edit can't block starting them.
+        let config = match self.mode {
+            GameMode::MentalMath => {
+                let add_max = self
+                    .add_high_input
+                    .parse::<i32>()
+                    .map_err(|_| "Addition high end must be a whole number.")?;
+                let mul_max_left = self
+                    .mul_high_left_input
+                    .parse::<i32>()
+                    .map_err(|_| "Left multiplication high end must be a whole number.")?;
+                let mul_max_right = self
+                    .mul_high_right_input
+                    .parse::<i32>()
+                    .map_err(|_| "Right multiplication high end must be a whole number.")?;
+                let config = GameConfig {
+                    mode: self.mode,
+                    add_max,
+                    mul_max_left,
+                    mul_max_right,
+                    add_enabled: self.add_enabled,
+                    sub_enabled: self.sub_enabled,
+                    mul_enabled: self.mul_enabled,
+                    div_enabled: self.div_enabled,
+                };
+                config.validate()?;
+                config
+            }
+            GameMode::Sequences => GameConfig {
+                mode: self.mode,
+                add_max: 100,
+                mul_max_left: 12,
+                mul_max_right: 100,
+                add_enabled: true,
+                sub_enabled: true,
+                mul_enabled: true,
+                div_enabled: true,
+            },
         };
-        config.validate()?;
         Ok(SetupConfig {
             game: config,
             duration: Duration::from_secs(time_seconds),
-            voice_enabled: self.voice_enabled,
+            voice_enabled: self.voice_enabled && self.mode == GameMode::MentalMath,
             mult_choice: self.mult_choice,
             wrong_penalty: if self.penalize_wrong { -1 } else { 0 },
             large_text: self.large_text,
@@ -395,6 +433,7 @@ fn render_menu_column(
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(3), // Gamemode
             Constraint::Length(3), // Time
             Constraint::Length(8), // Operations
             Constraint::Length(5), // Ranges
@@ -403,13 +442,29 @@ fn render_menu_column(
         ])
         .split(area);
 
+    // --- Gamemode. ---
+    let mode_block = Block::default()
+        .title("Gamemode")
+        .borders(Borders::ALL)
+        .padding(Padding::left(1));
+    let mode_inner = mode_block.inner(rows[0]);
+    frame.render_widget(mode_block, rows[0]);
+    frame.render_widget(
+        Paragraph::new(value_line(
+            setup.mode.title(),
+            setup.focus == SetupField::GameMode,
+        )),
+        mode_inner,
+    );
+    click_targets.push((rows[0], SetupField::GameMode));
+
     // --- Time. ---
     let time_block = Block::default()
         .title("Time (seconds)")
         .borders(Borders::ALL)
         .padding(Padding::left(1));
-    let time_inner = time_block.inner(rows[0]);
-    frame.render_widget(time_block, rows[0]);
+    let time_inner = time_block.inner(rows[1]);
+    frame.render_widget(time_block, rows[1]);
     frame.render_widget(
         Paragraph::new(value_line(
             setup.time_input.as_str(),
@@ -417,12 +472,12 @@ fn render_menu_column(
         )),
         time_inner,
     );
-    click_targets.push((rows[0], SetupField::TimeSeconds));
+    click_targets.push((rows[1], SetupField::TimeSeconds));
 
     // --- Operations: 2x2 clickable grid, mirroring the answer grid. ---
     let ops_block = Block::default().title("Operations").borders(Borders::ALL);
-    let ops_inner = ops_block.inner(rows[1]);
-    frame.render_widget(ops_block, rows[1]);
+    let ops_inner = ops_block.inner(rows[2]);
+    frame.render_widget(ops_block, rows[2]);
 
     let ops_rows = Layout::default()
         .direction(Direction::Vertical)
@@ -464,8 +519,8 @@ fn render_menu_column(
         .title("Ranges")
         .borders(Borders::ALL)
         .padding(Padding::left(1));
-    let ranges_inner = ranges_block.inner(rows[2]);
-    frame.render_widget(ranges_block, rows[2]);
+    let ranges_inner = ranges_block.inner(rows[3]);
+    frame.render_widget(ranges_block, rows[3]);
 
     let range_rows = Layout::default()
         .direction(Direction::Vertical)
@@ -510,8 +565,8 @@ fn render_menu_column(
         .title("Options")
         .borders(Borders::ALL)
         .padding(Padding::left(1));
-    let opts_inner = opts_block.inner(rows[3]);
-    frame.render_widget(opts_block, rows[3]);
+    let opts_inner = opts_block.inner(rows[4]);
+    frame.render_widget(opts_block, rows[4]);
 
     let opt_rows = Layout::default()
         .direction(Direction::Vertical)
