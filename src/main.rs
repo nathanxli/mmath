@@ -1,5 +1,6 @@
 mod game;
 mod model;
+mod optiver;
 mod results;
 mod sequences;
 mod setup;

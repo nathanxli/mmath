@@ -80,6 +80,15 @@ pub fn run_game(
                         .add_modifier(Modifier::BOLD),
                 ),
             ];
+            if let Some(limit) = app.question_limit {
+                header_spans.push(Span::raw("    Question: "));
+                header_spans.push(Span::styled(
+                    format!("{}/{}", app.history.len() + 1, limit),
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
             if let Some(last) = voice_latencies.last() {
                 let avg = voice_latencies.iter().sum::<Duration>().as_millis()
                     / voice_latencies.len() as u128;
@@ -125,12 +134,12 @@ pub fn run_game(
                 frame.render_widget(question, question_inner);
             }
 
-            if let Some(options) = app.current.options {
+            if let Some(options) = &app.current.options {
                 let rows = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([Constraint::Length(6), Constraint::Length(6)])
                     .split(chunks[2]);
-                for (idx, &value) in options.iter().enumerate() {
+                for (idx, value) in options.iter().enumerate() {
                     let halves = Layout::default()
                         .direction(Direction::Horizontal)
                         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
@@ -144,7 +153,9 @@ pub fn run_game(
                         .title(format!("{})", idx + 1))
                         .borders(Borders::ALL)
                         .border_style(style);
-                    if use_small_text {
+                    let cell_inner = cell_block.inner(cell_area);
+                    let value_fits = value.chars().count() as u16 * 8 <= cell_inner.width;
+                    if use_small_text || !value_fits {
                         // Leading blank line to roughly center the value
                         // vertically in the taller cell.
                         let cell = Paragraph::new(format!("\n{}", value))
@@ -153,13 +164,12 @@ pub fn run_game(
                             .block(cell_block);
                         frame.render_widget(cell, cell_area);
                     } else {
-                        let cell_inner = cell_block.inner(cell_area);
                         frame.render_widget(cell_block, cell_area);
                         let big_value = BigText::builder()
                             .pixel_size(PixelSize::HalfHeight)
                             .centered()
                             .style(style.add_modifier(Modifier::BOLD))
-                            .lines(vec![Line::from(value.to_string())])
+                            .lines(vec![Line::from(value.clone())])
                             .build();
                         frame.render_widget(big_value, cell_inner);
                     }

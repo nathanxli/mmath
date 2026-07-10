@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use rand::Rng;
 use rand::seq::SliceRandom;
 
+use crate::optiver;
 use crate::sequences;
 
 pub const ADD_MIN: i32 = 2;
@@ -39,6 +40,7 @@ enum Op {
 pub enum GameMode {
     MentalMath,
     Sequences,
+    Optiver80,
 }
 
 impl GameMode {
@@ -46,16 +48,21 @@ impl GameMode {
         match self {
             GameMode::MentalMath => "Mental Math",
             GameMode::Sequences => "Sequences",
+            GameMode::Optiver80 => "Optiver 80 in 8",
         }
     }
 }
 
 pub struct Question {
     pub prompt: String,
+    /// Numeric answer for typed input. Unused in Optiver mode, which is
+    /// multiple-choice only and may have non-integer answers.
     answer: i32,
-    /// The 2x2 answer grid (one entry equals `answer`), present in
+    /// The answer as displayed: matches one multiple-choice option exactly.
+    pub answer_text: String,
+    /// The 2x2 answer grid (one entry equals `answer_text`), present in
     /// multiple-choice mode only.
-    pub options: Option<[i32; 4]>,
+    pub options: Option<[String; 4]>,
 }
 
 pub struct QuestionRecord {
@@ -148,18 +155,31 @@ impl QuestionGenerator {
         match self.config.mode {
             GameMode::MentalMath => self.next_mental_math(),
             GameMode::Sequences => self.next_sequence(),
+            GameMode::Optiver80 => self.next_optiver(),
         }
     }
 
     fn next_sequence(&mut self) -> Question {
         let seq = sequences::generate(&mut self.rng);
-        let options = self
-            .mult_choice
-            .then(|| make_options(&mut self.rng, seq.answer, &seq.candidates, i32::MIN));
+        let options = self.mult_choice.then(|| {
+            make_options(&mut self.rng, seq.answer, &seq.candidates, i32::MIN)
+                .map(|v| v.to_string())
+        });
         Question {
             prompt: seq.prompt,
             answer: seq.answer,
+            answer_text: seq.answer.to_string(),
             options,
+        }
+    }
+
+    fn next_optiver(&mut self) -> Question {
+        let q = optiver::generate(&mut self.rng);
+        Question {
+            prompt: q.prompt,
+            answer: 0,
+            answer_text: q.answer_text,
+            options: Some(q.options),
         }
     }
 
@@ -244,10 +264,11 @@ impl QuestionGenerator {
 
         let options = self
             .mult_choice
-            .then(|| make_options(&mut self.rng, answer, &candidates, 1));
+            .then(|| make_options(&mut self.rng, answer, &candidates, 1).map(|v| v.to_string()));
         Question {
             prompt,
             answer,
+            answer_text: answer.to_string(),
             options,
         }
     }
@@ -265,6 +286,9 @@ pub struct App {
     started_at: Instant,
     pub mult_choice: bool,
     pub wrong_penalty: i32,
+    /// A round ends early once this many questions are answered (the Optiver
+    /// test is capped at 80 questions).
+    pub question_limit: Option<usize>,
 }
 
 impl App {
@@ -274,6 +298,10 @@ impl App {
         mult_choice: bool,
         wrong_penalty: i32,
     ) -> Self {
+        let question_limit = match config.mode {
+            GameMode::Optiver80 => Some(optiver::QUESTION_LIMIT),
+            _ => None,
+        };
         let mut generator = QuestionGenerator::new(config.clone(), mult_choice);
         let current = generator.next();
 
@@ -289,6 +317,7 @@ impl App {
             started_at: Instant::now(),
             mult_choice,
             wrong_penalty,
+            question_limit,
         }
     }
 
@@ -299,6 +328,9 @@ impl App {
 
     pub fn is_done(&self) -> bool {
         self.remaining().is_zero()
+            || self
+                .question_limit
+                .is_some_and(|limit| self.history.len() >= limit)
     }
 
     pub fn try_advance_if_correct(&mut self) {
@@ -322,10 +354,10 @@ impl App {
     /// Answer the current question with the option at `idx` (multiple-choice
     /// mode). Records the outcome and advances regardless of correctness.
     pub fn answer_with_option(&mut self, idx: usize) {
-        let Some(options) = self.current.options else {
+        let Some(options) = &self.current.options else {
             return;
         };
-        let correct = options[idx] == self.current.answer;
+        let correct = options[idx] == self.current.answer_text;
         self.history.push(QuestionRecord {
             prompt: self.current.prompt.clone(),
             elapsed: self.question_started_at.elapsed(),
@@ -437,7 +469,30 @@ mod tests {
             let q = generator.next();
             assert!(q.prompt.ends_with(", ?"), "bad prompt: {:?}", q.prompt);
             let options = q.options.expect("multiple choice options");
-            assert!(options.contains(&q.answer));
+            assert!(options.contains(&q.answer_text));
         }
+    }
+
+    #[test]
+    fn optiver_mode_always_has_options_and_caps_questions() {
+        let config = GameConfig {
+            mode: GameMode::Optiver80,
+            add_max: 100,
+            mul_max_left: 12,
+            mul_max_right: 100,
+            add_enabled: true,
+            sub_enabled: true,
+            mul_enabled: true,
+            div_enabled: true,
+        };
+        let mut app = App::new(config, Duration::from_secs(480), true, -1);
+        assert_eq!(app.question_limit, Some(optiver::QUESTION_LIMIT));
+        for _ in 0..optiver::QUESTION_LIMIT {
+            assert!(!app.is_done(), "ended before the question cap");
+            assert!(app.current.options.is_some());
+            app.answer_with_option(0);
+        }
+        assert!(app.is_done(), "should end at the question cap");
+        assert_eq!(app.history.len(), optiver::QUESTION_LIMIT);
     }
 }

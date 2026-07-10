@@ -21,6 +21,7 @@ use crate::voice;
 enum SetupField {
     ModeMentalMath,
     ModeSequences,
+    ModeOptiver,
     AddMode,
     SubMode,
     MulMode,
@@ -112,6 +113,7 @@ impl SetupState {
         let mut fields = vec![
             SetupField::ModeMentalMath,
             SetupField::ModeSequences,
+            SetupField::ModeOptiver,
             SetupField::TimeSeconds,
         ];
         if self.mode == GameMode::MentalMath {
@@ -129,11 +131,12 @@ impl SetupState {
         if self.mode == GameMode::MentalMath {
             fields.push(SetupField::Voice);
         }
-        fields.extend([
-            SetupField::MultChoice,
-            SetupField::WrongPenalty,
-            SetupField::Start,
-        ]);
+        // Optiver is always multiple choice with a -1 penalty, so those
+        // toggles are fixed rather than focusable.
+        if self.mode != GameMode::Optiver80 {
+            fields.extend([SetupField::MultChoice, SetupField::WrongPenalty]);
+        }
+        fields.push(SetupField::Start);
         fields
     }
 
@@ -156,6 +159,17 @@ impl SetupState {
         if mode != GameMode::MentalMath {
             self.voice_enabled = false;
         }
+        if mode == GameMode::Optiver80 {
+            self.mult_choice = true;
+            self.penalize_wrong = true;
+        }
+        // Swap in the mode's natural duration unless the user typed one.
+        if !self.time_edited {
+            self.time_input = match mode {
+                GameMode::Optiver80 => crate::optiver::DEFAULT_SECONDS.to_string(),
+                _ => String::from("120"),
+            };
+        }
         if !self.field_order().contains(&self.focus) {
             self.focus = SetupField::Start;
         }
@@ -166,6 +180,7 @@ impl SetupState {
         match self.focus {
             SetupField::ModeMentalMath => None,
             SetupField::ModeSequences => None,
+            SetupField::ModeOptiver => None,
             SetupField::AddMode => None,
             SetupField::SubMode => None,
             SetupField::MulMode => None,
@@ -194,6 +209,10 @@ impl SetupState {
             }
             SetupField::ModeSequences => {
                 self.select_mode(GameMode::Sequences);
+                true
+            }
+            SetupField::ModeOptiver => {
+                self.select_mode(GameMode::Optiver80);
                 true
             }
             SetupField::AddMode => {
@@ -284,7 +303,7 @@ impl SetupState {
                 config.validate()?;
                 config
             }
-            GameMode::Sequences => GameConfig {
+            GameMode::Sequences | GameMode::Optiver80 => GameConfig {
                 mode: self.mode,
                 add_max: 100,
                 mul_max_left: 12,
@@ -295,12 +314,15 @@ impl SetupState {
                 div_enabled: true,
             },
         };
+        // Optiver is locked to the real test's format: multiple choice, -1
+        // for a wrong answer.
+        let optiver = self.mode == GameMode::Optiver80;
         Ok(SetupConfig {
             game: config,
             duration: Duration::from_secs(time_seconds),
             voice_enabled: self.voice_enabled && self.mode == GameMode::MentalMath,
-            mult_choice: self.mult_choice,
-            wrong_penalty: if self.penalize_wrong { -1 } else { 0 },
+            mult_choice: self.mult_choice || optiver,
+            wrong_penalty: if self.penalize_wrong || optiver { -1 } else { 0 },
             large_text: self.large_text,
         })
     }
@@ -450,6 +472,7 @@ fn render_gamemode_column(
     let modes = [
         (GameMode::MentalMath, SetupField::ModeMentalMath),
         (GameMode::Sequences, SetupField::ModeSequences),
+        (GameMode::Optiver80, SetupField::ModeOptiver),
     ];
 
     let column_block = Block::default().title("Gamemode").borders(Borders::ALL);
@@ -504,30 +527,44 @@ fn render_options_column(
     click_targets: &mut Vec<(Rect, SetupField)>,
 ) {
     let mental_math = setup.mode == GameMode::MentalMath;
+    let optiver = setup.mode == GameMode::Optiver80;
 
-    let option_lines: Vec<(Line, SetupField)> = {
+    // `None` fields are fixed-format info rows, not clickable toggles.
+    let option_lines: Vec<(Line, Option<SetupField>)> = {
         let mut lines = vec![(
             large_text_line(setup.large_text, setup.focus == SetupField::LargeText),
-            SetupField::LargeText,
+            Some(SetupField::LargeText),
         )];
         if mental_math {
             lines.push((
                 voice_line(setup.voice_enabled, setup.focus == SetupField::Voice),
-                SetupField::Voice,
+                Some(SetupField::Voice),
             ));
         }
-        lines.push((
-            mult_choice_line(setup.mult_choice, setup.focus == SetupField::MultChoice),
-            SetupField::MultChoice,
-        ));
-        lines.push((
-            penalty_line(
-                setup.penalize_wrong,
-                setup.focus == SetupField::WrongPenalty,
-                setup.mult_choice,
-            ),
-            SetupField::WrongPenalty,
-        ));
+        if optiver {
+            let dim = Style::default().fg(Color::DarkGray);
+            lines.push((
+                Line::from(Span::styled("Mult choice:  always on", dim)),
+                None,
+            ));
+            lines.push((
+                Line::from(Span::styled("Penalty −1:   always on", dim)),
+                None,
+            ));
+        } else {
+            lines.push((
+                mult_choice_line(setup.mult_choice, setup.focus == SetupField::MultChoice),
+                Some(SetupField::MultChoice),
+            ));
+            lines.push((
+                penalty_line(
+                    setup.penalize_wrong,
+                    setup.focus == SetupField::WrongPenalty,
+                    setup.mult_choice,
+                ),
+                Some(SetupField::WrongPenalty),
+            ));
+        }
         lines
     };
 
@@ -666,7 +703,9 @@ fn render_options_column(
 
     for (idx, (line, field)) in option_lines.into_iter().enumerate() {
         frame.render_widget(Paragraph::new(line), opt_rows[idx]);
-        click_targets.push((opt_rows[idx], field));
+        if let Some(field) = field {
+            click_targets.push((opt_rows[idx], field));
+        }
     }
 }
 
@@ -883,6 +922,33 @@ mod tests {
             state.focus_next();
         }
         assert_eq!(state.focus, SetupField::ModeSequences);
+    }
+
+    #[test]
+    fn optiver_forces_mult_choice_penalty_and_test_duration() {
+        let mut state = SetupState::new(false, false, true);
+        state.focus = SetupField::ModeOptiver;
+        state.toggle_focused_mode();
+        assert_eq!(state.time_input, "480");
+        let order = state.field_order();
+        assert!(!order.contains(&SetupField::MultChoice));
+        assert!(!order.contains(&SetupField::WrongPenalty));
+        assert!(!order.contains(&SetupField::Voice));
+        let config = state.parse_config().expect("optiver config should parse");
+        assert!(config.game.mode == GameMode::Optiver80);
+        assert!(config.mult_choice);
+        assert_eq!(config.wrong_penalty, -1);
+        assert_eq!(config.duration.as_secs(), 480);
+    }
+
+    #[test]
+    fn user_edited_time_survives_mode_switch() {
+        let mut state = SetupState::new(false, false, true);
+        state.time_input = String::from("60");
+        state.time_edited = true;
+        state.focus = SetupField::ModeOptiver;
+        state.toggle_focused_mode();
+        assert_eq!(state.time_input, "60");
     }
 
     #[test]
