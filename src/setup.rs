@@ -17,9 +17,10 @@ use ratatui::widgets::{Block, Borders, Padding, Paragraph};
 use crate::model::{ADD_MIN, GameConfig, GameMode, MUL_MIN};
 use crate::voice;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum SetupField {
-    GameMode,
+    ModeMentalMath,
+    ModeSequences,
     AddMode,
     SubMode,
     MulMode,
@@ -33,46 +34,6 @@ enum SetupField {
     MultChoice,
     WrongPenalty,
     Start,
-}
-
-impl SetupField {
-    fn next(self) -> Self {
-        match self {
-            SetupField::GameMode => SetupField::AddMode,
-            SetupField::AddMode => SetupField::SubMode,
-            SetupField::SubMode => SetupField::MulMode,
-            SetupField::MulMode => SetupField::DivMode,
-            SetupField::DivMode => SetupField::AddHigh,
-            SetupField::AddHigh => SetupField::MulHighLeft,
-            SetupField::MulHighLeft => SetupField::MulHighRight,
-            SetupField::MulHighRight => SetupField::TimeSeconds,
-            SetupField::TimeSeconds => SetupField::LargeText,
-            SetupField::LargeText => SetupField::Voice,
-            SetupField::Voice => SetupField::MultChoice,
-            SetupField::MultChoice => SetupField::WrongPenalty,
-            SetupField::WrongPenalty => SetupField::Start,
-            SetupField::Start => SetupField::GameMode,
-        }
-    }
-
-    fn prev(self) -> Self {
-        match self {
-            SetupField::GameMode => SetupField::Start,
-            SetupField::AddMode => SetupField::GameMode,
-            SetupField::SubMode => SetupField::AddMode,
-            SetupField::MulMode => SetupField::SubMode,
-            SetupField::DivMode => SetupField::MulMode,
-            SetupField::AddHigh => SetupField::DivMode,
-            SetupField::MulHighLeft => SetupField::AddHigh,
-            SetupField::MulHighRight => SetupField::MulHighLeft,
-            SetupField::TimeSeconds => SetupField::MulHighRight,
-            SetupField::LargeText => SetupField::TimeSeconds,
-            SetupField::Voice => SetupField::LargeText,
-            SetupField::MultChoice => SetupField::Voice,
-            SetupField::WrongPenalty => SetupField::MultChoice,
-            SetupField::Start => SetupField::WrongPenalty,
-        }
-    }
 }
 
 pub struct SetupConfig {
@@ -110,7 +71,7 @@ impl SetupState {
     pub fn new(voice_default: bool, mult_choice_default: bool, large_text_default: bool) -> Self {
         let voice_wanted = voice_default && !mult_choice_default;
         Self {
-            focus: SetupField::GameMode,
+            focus: SetupField::ModeMentalMath,
             mode: GameMode::MentalMath,
             add_enabled: true,
             sub_enabled: true,
@@ -145,9 +106,66 @@ impl SetupState {
         self.message = format!("Voice unavailable: {}", err);
     }
 
+    /// The focusable fields for the current gamemode, in navigation order:
+    /// gamemode column first, then the visible option fields, then Start.
+    fn field_order(&self) -> Vec<SetupField> {
+        let mut fields = vec![
+            SetupField::ModeMentalMath,
+            SetupField::ModeSequences,
+            SetupField::TimeSeconds,
+        ];
+        if self.mode == GameMode::MentalMath {
+            fields.extend([
+                SetupField::AddMode,
+                SetupField::SubMode,
+                SetupField::MulMode,
+                SetupField::DivMode,
+                SetupField::AddHigh,
+                SetupField::MulHighLeft,
+                SetupField::MulHighRight,
+            ]);
+        }
+        fields.push(SetupField::LargeText);
+        if self.mode == GameMode::MentalMath {
+            fields.push(SetupField::Voice);
+        }
+        fields.extend([
+            SetupField::MultChoice,
+            SetupField::WrongPenalty,
+            SetupField::Start,
+        ]);
+        fields
+    }
+
+    fn focus_next(&mut self) {
+        let order = self.field_order();
+        let idx = order.iter().position(|&f| f == self.focus).unwrap_or(0);
+        self.focus = order[(idx + 1) % order.len()];
+    }
+
+    fn focus_prev(&mut self) {
+        let order = self.field_order();
+        let idx = order.iter().position(|&f| f == self.focus).unwrap_or(0);
+        self.focus = order[(idx + order.len() - 1) % order.len()];
+    }
+
+    /// Switch gamemode, dropping focus/settings that don't exist in the new
+    /// mode.
+    fn select_mode(&mut self, mode: GameMode) {
+        self.mode = mode;
+        if mode != GameMode::MentalMath {
+            self.voice_enabled = false;
+        }
+        if !self.field_order().contains(&self.focus) {
+            self.focus = SetupField::Start;
+        }
+        self.message = format!("Gamemode: {}.", mode.title());
+    }
+
     fn active_input_mut(&mut self) -> Option<(&mut String, &mut bool)> {
         match self.focus {
-            SetupField::GameMode => None,
+            SetupField::ModeMentalMath => None,
+            SetupField::ModeSequences => None,
             SetupField::AddMode => None,
             SetupField::SubMode => None,
             SetupField::MulMode => None,
@@ -170,14 +188,12 @@ impl SetupState {
 
     fn toggle_focused_mode(&mut self) -> bool {
         match self.focus {
-            SetupField::GameMode => {
-                self.mode = match self.mode {
-                    GameMode::MentalMath => GameMode::Sequences,
-                    GameMode::Sequences => GameMode::MentalMath,
-                };
-                if self.mode != GameMode::MentalMath {
-                    self.voice_enabled = false;
-                }
+            SetupField::ModeMentalMath => {
+                self.select_mode(GameMode::MentalMath);
+                true
+            }
+            SetupField::ModeSequences => {
+                self.select_mode(GameMode::Sequences);
                 true
             }
             SetupField::AddMode => {
@@ -334,14 +350,15 @@ fn run_setup_loop(
             .style(Style::default().fg(Color::DarkGray));
             frame.render_widget(help, chunks[0]);
 
-            // Keep the two-column split but use only the left half; the menu
-            // stacks in a single column while Start/Status still span the width.
+            // Gamemode selection on the left; the selected gamemode's options
+            // on the right. Start/Status span the full width below.
             let columns = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
                 .split(chunks[1]);
 
-            render_menu_column(frame, columns[0], setup, &mut click_targets);
+            render_gamemode_column(frame, columns[0], setup, &mut click_targets);
+            render_options_column(frame, columns[1], setup, &mut click_targets);
 
             render_start_button(frame, chunks[2], setup.focus == SetupField::Start);
             click_targets.push((chunks[2], SetupField::Start));
@@ -359,8 +376,8 @@ fn run_setup_loop(
         if event::poll(Duration::from_millis(50))? {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-                    KeyCode::Up | KeyCode::Char('k') => setup.focus = setup.focus.prev(),
-                    KeyCode::Down | KeyCode::Char('j') => setup.focus = setup.focus.next(),
+                    KeyCode::Up | KeyCode::Char('k') => setup.focus_prev(),
+                    KeyCode::Down | KeyCode::Char('j') => setup.focus_next(),
                     KeyCode::Backspace => {
                         if let Some((input, edited)) = setup.active_input_mut() {
                             input.pop();
@@ -422,49 +439,118 @@ fn run_setup_loop(
     }
 }
 
-/// The menu, stacked top-to-bottom in a single column: Time, Operations,
-/// Ranges, then Options.
-fn render_menu_column(
+/// Left column: one clickable cell per gamemode; the selected one has a green
+/// border.
+fn render_gamemode_column(
     frame: &mut ratatui::Frame,
     area: Rect,
     setup: &SetupState,
     click_targets: &mut Vec<(Rect, SetupField)>,
 ) {
+    let modes = [
+        (GameMode::MentalMath, SetupField::ModeMentalMath),
+        (GameMode::Sequences, SetupField::ModeSequences),
+    ];
+
+    let column_block = Block::default().title("Gamemode").borders(Borders::ALL);
+    let column_inner = column_block.inner(area);
+    frame.render_widget(column_block, area);
+
+    let mut constraints: Vec<Constraint> =
+        modes.iter().map(|_| Constraint::Length(5)).collect();
+    constraints.push(Constraint::Min(0));
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Gamemode
-            Constraint::Length(3), // Time
-            Constraint::Length(8), // Operations
-            Constraint::Length(5), // Ranges
-            Constraint::Length(6), // Options
-            Constraint::Min(0),
-        ])
-        .split(area);
+        .constraints(constraints)
+        .split(column_inner);
 
-    // --- Gamemode. ---
-    let mode_block = Block::default()
-        .title("Gamemode")
-        .borders(Borders::ALL)
-        .padding(Padding::left(1));
-    let mode_inner = mode_block.inner(rows[0]);
-    frame.render_widget(mode_block, rows[0]);
-    frame.render_widget(
-        Paragraph::new(value_line(
-            setup.mode.title(),
-            setup.focus == SetupField::GameMode,
-        )),
-        mode_inner,
-    );
-    click_targets.push((rows[0], SetupField::GameMode));
+    for (idx, &(mode, field)) in modes.iter().enumerate() {
+        let selected = setup.mode == mode;
+        let focused = setup.focus == field;
+        let border_color = if selected { Color::Green } else { Color::DarkGray };
+        let cell_block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(border_color));
+        let cell_inner = cell_block.inner(rows[idx]);
+        frame.render_widget(cell_block, rows[idx]);
+
+        let mut style = if selected {
+            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        if focused {
+            style = style.add_modifier(Modifier::UNDERLINED);
+        }
+        // Middle line of the 3-row inner area, to center vertically.
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::default(),
+                Line::from(Span::styled(mode.title(), style)),
+            ])
+            .alignment(Alignment::Center),
+            cell_inner,
+        );
+        click_targets.push((rows[idx], field));
+    }
+}
+
+/// Right column: the options for the selected gamemode. Time and the Options
+/// toggles are always present; Operations and Ranges are Mental Math only.
+fn render_options_column(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    setup: &SetupState,
+    click_targets: &mut Vec<(Rect, SetupField)>,
+) {
+    let mental_math = setup.mode == GameMode::MentalMath;
+
+    let option_lines: Vec<(Line, SetupField)> = {
+        let mut lines = vec![(
+            large_text_line(setup.large_text, setup.focus == SetupField::LargeText),
+            SetupField::LargeText,
+        )];
+        if mental_math {
+            lines.push((
+                voice_line(setup.voice_enabled, setup.focus == SetupField::Voice),
+                SetupField::Voice,
+            ));
+        }
+        lines.push((
+            mult_choice_line(setup.mult_choice, setup.focus == SetupField::MultChoice),
+            SetupField::MultChoice,
+        ));
+        lines.push((
+            penalty_line(
+                setup.penalize_wrong,
+                setup.focus == SetupField::WrongPenalty,
+                setup.mult_choice,
+            ),
+            SetupField::WrongPenalty,
+        ));
+        lines
+    };
+
+    let mut constraints = vec![Constraint::Length(3)]; // Time
+    if mental_math {
+        constraints.push(Constraint::Length(8)); // Operations
+        constraints.push(Constraint::Length(5)); // Ranges
+    }
+    constraints.push(Constraint::Length(option_lines.len() as u16 + 2)); // Options
+    constraints.push(Constraint::Min(0));
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(constraints)
+        .split(area);
+    let mut row = 0;
 
     // --- Time. ---
     let time_block = Block::default()
         .title("Time (seconds)")
         .borders(Borders::ALL)
         .padding(Padding::left(1));
-    let time_inner = time_block.inner(rows[1]);
-    frame.render_widget(time_block, rows[1]);
+    let time_inner = time_block.inner(rows[row]);
+    frame.render_widget(time_block, rows[row]);
     frame.render_widget(
         Paragraph::new(value_line(
             setup.time_input.as_str(),
@@ -472,92 +558,97 @@ fn render_menu_column(
         )),
         time_inner,
     );
-    click_targets.push((rows[1], SetupField::TimeSeconds));
+    click_targets.push((rows[row], SetupField::TimeSeconds));
+    row += 1;
 
-    // --- Operations: 2x2 clickable grid, mirroring the answer grid. ---
-    let ops_block = Block::default().title("Operations").borders(Borders::ALL);
-    let ops_inner = ops_block.inner(rows[2]);
-    frame.render_widget(ops_block, rows[2]);
+    if mental_math {
+        // --- Operations: 2x2 clickable grid, mirroring the answer grid. ---
+        let ops_block = Block::default().title("Operations").borders(Borders::ALL);
+        let ops_inner = ops_block.inner(rows[row]);
+        frame.render_widget(ops_block, rows[row]);
+        row += 1;
 
-    let ops_rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Length(3)])
-        .split(ops_inner);
+        let ops_rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(3), Constraint::Length(3)])
+            .split(ops_inner);
 
-    let cells = [
-        ("+", setup.add_enabled, SetupField::AddMode),
-        ("-", setup.sub_enabled, SetupField::SubMode),
-        ("*", setup.mul_enabled, SetupField::MulMode),
-        ("/", setup.div_enabled, SetupField::DivMode),
-    ];
-    for (idx, &(symbol, enabled, field)) in cells.iter().enumerate() {
-        let halves = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(ops_rows[idx / 2]);
-        let cell_area = halves[idx % 2];
-        let focused = setup.focus == field;
+        let cells = [
+            ("+", setup.add_enabled, SetupField::AddMode),
+            ("-", setup.sub_enabled, SetupField::SubMode),
+            ("*", setup.mul_enabled, SetupField::MulMode),
+            ("/", setup.div_enabled, SetupField::DivMode),
+        ];
+        for (idx, &(symbol, enabled, field)) in cells.iter().enumerate() {
+            let halves = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .split(ops_rows[idx / 2]);
+            let cell_area = halves[idx % 2];
+            let focused = setup.focus == field;
 
-        // Border is always green/red for on/off; focus is shown by the
-        // underlined inner text (mode_span), never a color change.
-        let border_color = if enabled { Color::Green } else { Color::Red };
-        let cell_block = Block::default()
+            // Border is always green/red for on/off; focus is shown by the
+            // underlined inner text (mode_span), never a color change.
+            let border_color = if enabled { Color::Green } else { Color::Red };
+            let cell_block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(border_color));
+            let cell_inner = cell_block.inner(cell_area);
+            frame.render_widget(cell_block, cell_area);
+            frame.render_widget(
+                Paragraph::new(Line::from(mode_span(symbol, enabled, focused)))
+                    .alignment(Alignment::Center),
+                cell_inner,
+            );
+            click_targets.push((cell_area, field));
+        }
+
+        // --- Ranges: one clickable numeric row per field. ---
+        let ranges_block = Block::default()
+            .title("Ranges")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(border_color));
-        let cell_inner = cell_block.inner(cell_area);
-        frame.render_widget(cell_block, cell_area);
-        frame.render_widget(
-            Paragraph::new(Line::from(mode_span(symbol, enabled, focused)))
-                .alignment(Alignment::Center),
-            cell_inner,
-        );
-        click_targets.push((cell_area, field));
-    }
+            .padding(Padding::left(1));
+        let ranges_inner = ranges_block.inner(rows[row]);
+        frame.render_widget(ranges_block, rows[row]);
+        row += 1;
 
-    // --- Ranges: one clickable numeric row per field. ---
-    let ranges_block = Block::default()
-        .title("Ranges")
-        .borders(Borders::ALL)
-        .padding(Padding::left(1));
-    let ranges_inner = ranges_block.inner(rows[3]);
-    frame.render_widget(ranges_block, rows[3]);
+        let range_rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(ranges_inner);
 
-    let range_rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
-        .split(ranges_inner);
-
-    let ranges = [
-        (
-            "Addition",
-            ADD_MIN,
-            setup.add_high_input.as_str(),
-            SetupField::AddHigh,
-        ),
-        (
-            "Mult ×a",
-            MUL_MIN,
-            setup.mul_high_left_input.as_str(),
-            SetupField::MulHighLeft,
-        ),
-        (
-            "Mult ×b",
-            MUL_MIN,
-            setup.mul_high_right_input.as_str(),
-            SetupField::MulHighRight,
-        ),
-    ];
-    for (idx, &(label, low, value, field)) in ranges.iter().enumerate() {
-        let focused = setup.focus == field;
-        frame.render_widget(
-            Paragraph::new(range_line(label, low, value, focused)),
-            range_rows[idx],
-        );
-        click_targets.push((range_rows[idx], field));
+        let ranges = [
+            (
+                "Addition",
+                ADD_MIN,
+                setup.add_high_input.as_str(),
+                SetupField::AddHigh,
+            ),
+            (
+                "Mult ×a",
+                MUL_MIN,
+                setup.mul_high_left_input.as_str(),
+                SetupField::MulHighLeft,
+            ),
+            (
+                "Mult ×b",
+                MUL_MIN,
+                setup.mul_high_right_input.as_str(),
+                SetupField::MulHighRight,
+            ),
+        ];
+        for (idx, &(label, low, value, field)) in ranges.iter().enumerate() {
+            let focused = setup.focus == field;
+            frame.render_widget(
+                Paragraph::new(range_line(label, low, value, focused)),
+                range_rows[idx],
+            );
+            click_targets.push((range_rows[idx], field));
+        }
     }
 
     // --- Options: one clickable toggle per row. ---
@@ -565,41 +656,14 @@ fn render_menu_column(
         .title("Options")
         .borders(Borders::ALL)
         .padding(Padding::left(1));
-    let opts_inner = opts_block.inner(rows[4]);
-    frame.render_widget(opts_block, rows[4]);
+    let opts_inner = opts_block.inner(rows[row]);
+    frame.render_widget(opts_block, rows[row]);
 
     let opt_rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-        ])
+        .constraints(vec![Constraint::Length(1); option_lines.len()])
         .split(opts_inner);
 
-    let option_lines = [
-        (
-            large_text_line(setup.large_text, setup.focus == SetupField::LargeText),
-            SetupField::LargeText,
-        ),
-        (
-            voice_line(setup.voice_enabled, setup.focus == SetupField::Voice),
-            SetupField::Voice,
-        ),
-        (
-            mult_choice_line(setup.mult_choice, setup.focus == SetupField::MultChoice),
-            SetupField::MultChoice,
-        ),
-        (
-            penalty_line(
-                setup.penalize_wrong,
-                setup.focus == SetupField::WrongPenalty,
-                setup.mult_choice,
-            ),
-            SetupField::WrongPenalty,
-        ),
-    ];
     for (idx, (line, field)) in option_lines.into_iter().enumerate() {
         frame.render_widget(Paragraph::new(line), opt_rows[idx]);
         click_targets.push((opt_rows[idx], field));
@@ -803,5 +867,36 @@ mod tests {
         let state = SetupState::new(true, true, true);
         assert!(!state.voice_enabled);
         assert!(state.mult_choice);
+    }
+
+    #[test]
+    fn sequences_mode_hides_mental_math_fields() {
+        let mut state = SetupState::new(false, false, true);
+        state.focus = SetupField::ModeSequences;
+        state.toggle_focused_mode();
+        let order = state.field_order();
+        assert!(!order.contains(&SetupField::AddMode));
+        assert!(!order.contains(&SetupField::AddHigh));
+        assert!(!order.contains(&SetupField::Voice));
+        // Navigation wraps through exactly the visible fields.
+        for _ in 0..order.len() {
+            state.focus_next();
+        }
+        assert_eq!(state.focus, SetupField::ModeSequences);
+    }
+
+    #[test]
+    fn sequences_start_ignores_range_inputs_and_voice() {
+        let mut state = SetupState::new(false, false, true);
+        state.voice_enabled = voice::AVAILABLE;
+        state.focus = SetupField::ModeSequences;
+        state.toggle_focused_mode();
+        // A range input left in an invalid state must not block other modes.
+        state.add_high_input = String::new();
+        let config = state
+            .parse_config()
+            .expect("sequences must not validate mental math ranges");
+        assert!(config.game.mode == GameMode::Sequences);
+        assert!(!config.voice_enabled);
     }
 }
