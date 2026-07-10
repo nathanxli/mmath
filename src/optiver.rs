@@ -104,16 +104,15 @@ fn build_options<R: Rng>(rng: &mut R, answer: &str, candidates: &[String]) -> [S
 
 /// Nudge a formatted answer by `delta` in its last place, preserving notation.
 fn perturb(answer: &str, delta: i64) -> String {
-    if let Some((num, den)) = answer.split_once('/') {
-        if let (Ok(num), Ok(den)) = (num.parse::<i64>(), den.parse::<i64>()) {
-            return fmt_frac(num + delta, den);
-        }
+    if let Some((num, den)) = answer.split_once('/')
+        && let (Ok(num), Ok(den)) = (num.parse::<i64>(), den.parse::<i64>())
+    {
+        return fmt_frac(num + delta, den);
     }
-    if let Some((int, frac)) = answer.split_once('.') {
-        let scale = frac.len() as u32;
-        if let Ok(value) = format!("{}{}", int, frac).parse::<i64>() {
-            return fmt_scaled(value + delta, scale);
-        }
+    if let Some((int, frac)) = answer.split_once('.')
+        && let Ok(value) = format!("{}{}", int, frac).parse::<i64>()
+    {
+        return fmt_scaled(value + delta, frac.len() as u32);
     }
     if let Ok(value) = answer.parse::<i64>() {
         return (value + delta).to_string();

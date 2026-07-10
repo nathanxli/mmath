@@ -65,6 +65,14 @@ pub struct Question {
     pub options: Option<[String; 4]>,
 }
 
+impl Question {
+    /// The prompt with "?" replaced by the correct answer, e.g. "3 + 4 = 7",
+    /// as shown on the results page.
+    fn resolved_prompt(&self) -> String {
+        self.prompt.replace('?', &self.answer_text)
+    }
+}
+
 pub struct QuestionRecord {
     pub prompt: String,
     pub elapsed: Duration,
@@ -338,7 +346,7 @@ impl App {
             if value == self.current.answer {
                 let elapsed = self.question_started_at.elapsed();
                 self.history.push(QuestionRecord {
-                    prompt: self.current.prompt.clone(),
+                    prompt: self.current.resolved_prompt(),
                     elapsed,
                     correct: true,
                     voice_latency: None,
@@ -359,7 +367,7 @@ impl App {
         };
         let correct = options[idx] == self.current.answer_text;
         self.history.push(QuestionRecord {
-            prompt: self.current.prompt.clone(),
+            prompt: self.current.resolved_prompt(),
             elapsed: self.question_started_at.elapsed(),
             correct,
             voice_latency: None,
@@ -471,6 +479,36 @@ mod tests {
             let options = q.options.expect("multiple choice options");
             assert!(options.contains(&q.answer_text));
         }
+    }
+
+    #[test]
+    fn history_records_prompt_with_answer_filled_in() {
+        let config = GameConfig {
+            mode: GameMode::MentalMath,
+            add_max: 100,
+            mul_max_left: 12,
+            mul_max_right: 100,
+            add_enabled: true,
+            sub_enabled: true,
+            mul_enabled: true,
+            div_enabled: true,
+        };
+        let mut app = App::new(config, Duration::from_secs(60), true, 0);
+        let answer_text = app.current.answer_text.clone();
+        let expected = app.current.prompt.replace('?', &answer_text);
+        // Answer with a wrong option too: the record still shows the correct
+        // answer, not the chosen one.
+        let wrong_idx = app
+            .current
+            .options
+            .as_ref()
+            .unwrap()
+            .iter()
+            .position(|v| *v != answer_text)
+            .unwrap();
+        app.answer_with_option(wrong_idx);
+        assert_eq!(app.history[0].prompt, expected);
+        assert!(!app.history[0].prompt.contains('?'));
     }
 
     #[test]
