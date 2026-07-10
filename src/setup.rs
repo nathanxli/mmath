@@ -281,10 +281,9 @@ fn run_setup_loop(
             let area = frame.area();
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .margin(1)
                 .constraints([
                     Constraint::Length(1),  // help line
-                    Constraint::Min(11),    // two-column body
+                    Constraint::Min(22),    // single-column body
                     Constraint::Length(3),  // Start button
                     Constraint::Length(3),  // status bar
                 ])
@@ -297,13 +296,14 @@ fn run_setup_loop(
             .style(Style::default().fg(Color::DarkGray));
             frame.render_widget(help, chunks[0]);
 
+            // Keep the two-column split but use only the left half; the menu
+            // stacks in a single column while Start/Status still span the width.
             let columns = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .split(chunks[1]);
 
-            render_left_column(frame, columns[0], setup, &mut click_targets);
-            render_right_column(frame, columns[1], setup, &mut click_targets);
+            render_menu_column(frame, columns[0], setup, &mut click_targets);
 
             render_start_button(frame, chunks[2], setup.focus == SetupField::Start);
             click_targets.push((chunks[2], SetupField::Start));
@@ -384,8 +384,9 @@ fn run_setup_loop(
     }
 }
 
-/// Left column: the 2x2 operations grid stacked above the numeric ranges.
-fn render_left_column(
+/// The menu, stacked top-to-bottom in a single column: Time, Operations,
+/// Ranges, then Options.
+fn render_menu_column(
     frame: &mut ratatui::Frame,
     area: Rect,
     setup: &SetupState,
@@ -393,13 +394,35 @@ fn render_left_column(
 ) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(8), Constraint::Min(5)])
+        .constraints([
+            Constraint::Length(3), // Time
+            Constraint::Length(8), // Operations
+            Constraint::Length(5), // Ranges
+            Constraint::Length(6), // Options
+            Constraint::Min(0),
+        ])
         .split(area);
+
+    // --- Time. ---
+    let time_block = Block::default()
+        .title("Time (seconds)")
+        .borders(Borders::ALL)
+        .padding(Padding::left(1));
+    let time_inner = time_block.inner(rows[0]);
+    frame.render_widget(time_block, rows[0]);
+    frame.render_widget(
+        Paragraph::new(value_line(
+            setup.time_input.as_str(),
+            setup.focus == SetupField::TimeSeconds,
+        )),
+        time_inner,
+    );
+    click_targets.push((rows[0], SetupField::TimeSeconds));
 
     // --- Operations: 2x2 clickable grid, mirroring the answer grid. ---
     let ops_block = Block::default().title("Operations").borders(Borders::ALL);
-    let ops_inner = ops_block.inner(rows[0]);
-    frame.render_widget(ops_block, rows[0]);
+    let ops_inner = ops_block.inner(rows[1]);
+    frame.render_widget(ops_block, rows[1]);
 
     let ops_rows = Layout::default()
         .direction(Direction::Vertical)
@@ -420,14 +443,9 @@ fn render_left_column(
         let cell_area = halves[idx % 2];
         let focused = setup.focus == field;
 
-        // Border shows focus (yellow); the inner text shows on/off (green/red).
-        let border_color = if focused {
-            Color::Yellow
-        } else if enabled {
-            Color::Green
-        } else {
-            Color::Red
-        };
+        // Border is always green/red for on/off; focus is shown by the
+        // underlined inner text (mode_span), never a color change.
+        let border_color = if enabled { Color::Green } else { Color::Red };
         let cell_block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(border_color));
@@ -446,8 +464,8 @@ fn render_left_column(
         .title("Ranges")
         .borders(Borders::ALL)
         .padding(Padding::left(1));
-    let ranges_inner = ranges_block.inner(rows[1]);
-    frame.render_widget(ranges_block, rows[1]);
+    let ranges_inner = ranges_block.inner(rows[2]);
+    frame.render_widget(ranges_block, rows[2]);
 
     let range_rows = Layout::default()
         .direction(Direction::Vertical)
@@ -486,27 +504,14 @@ fn render_left_column(
         );
         click_targets.push((range_rows[idx], field));
     }
-}
-
-/// Right column: the on/off options stacked above the time field.
-fn render_right_column(
-    frame: &mut ratatui::Frame,
-    area: Rect,
-    setup: &SetupState,
-    click_targets: &mut Vec<(Rect, SetupField)>,
-) {
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(6), Constraint::Length(3), Constraint::Min(0)])
-        .split(area);
 
     // --- Options: one clickable toggle per row. ---
     let opts_block = Block::default()
         .title("Options")
         .borders(Borders::ALL)
         .padding(Padding::left(1));
-    let opts_inner = opts_block.inner(rows[0]);
-    frame.render_widget(opts_block, rows[0]);
+    let opts_inner = opts_block.inner(rows[3]);
+    frame.render_widget(opts_block, rows[3]);
 
     let opt_rows = Layout::default()
         .direction(Direction::Vertical)
@@ -544,22 +549,6 @@ fn render_right_column(
         frame.render_widget(Paragraph::new(line), opt_rows[idx]);
         click_targets.push((opt_rows[idx], field));
     }
-
-    // --- Time. ---
-    let time_block = Block::default()
-        .title("Time (seconds)")
-        .borders(Borders::ALL)
-        .padding(Padding::left(1));
-    let time_inner = time_block.inner(rows[1]);
-    frame.render_widget(time_block, rows[1]);
-    frame.render_widget(
-        Paragraph::new(value_line(
-            setup.time_input.as_str(),
-            setup.focus == SetupField::TimeSeconds,
-        )),
-        time_inner,
-    );
-    click_targets.push((rows[1], SetupField::TimeSeconds));
 }
 
 fn render_start_button(frame: &mut ratatui::Frame, area: Rect, focused: bool) {
