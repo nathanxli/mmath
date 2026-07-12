@@ -4,7 +4,6 @@ mod optiver;
 mod results;
 mod sequences;
 mod setup;
-mod voice;
 
 use std::env;
 use std::error::Error;
@@ -17,12 +16,10 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::widgets::Paragraph;
 
 use crate::game::run_game;
 use crate::results::{ResultsAction, run_results};
 use crate::setup::{SetupState, run_setup};
-use crate::voice::VoiceEngine;
 
 /// Scores kept for the results page's session statistics.
 const MAX_RECENT_SCORES: usize = 10;
@@ -31,10 +28,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
     // -s presets the "Large text" setup toggle to off.
     let large_text_default = !args.iter().any(|arg| arg == "-s");
-    let voice_default = args.iter().any(|arg| arg == "-v" || arg == "--voice");
     let mult_choice_default = args.iter().any(|arg| arg == "-m" || arg == "--mult-choice");
     let mut terminal = init_terminal()?;
-    let result = run(&mut terminal, large_text_default, voice_default, mult_choice_default);
+    let result = run(&mut terminal, large_text_default, mult_choice_default);
     restore_terminal(&mut terminal)?;
 
     match result {
@@ -51,35 +47,13 @@ fn main() -> Result<(), Box<dyn Error>> {
 fn run(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     large_text_default: bool,
-    voice_default: bool,
     mult_choice_default: bool,
 ) -> Result<bool, Box<dyn Error>> {
-    let mut state = SetupState::new(voice_default, mult_choice_default, large_text_default);
+    let mut state = SetupState::new(mult_choice_default, large_text_default);
 
-    // Voice startup can fail (missing model, no microphone). Report it in the
-    // menu and let the user start a keyboard drill instead of exiting.
-    let (setup, voice) = loop {
-        let setup = match run_setup(terminal, &mut state)? {
-            Some(config) => config,
-            None => return Ok(false),
-        };
-        if !setup.voice_enabled {
-            break (setup, None);
-        }
-        terminal.draw(|frame| {
-            frame.render_widget(Paragraph::new("Loading voice model..."), frame.area());
-        })?;
-        match VoiceEngine::start() {
-            Ok(engine) => {
-                // Native libs may have written to stderr during load; repaint.
-                terminal.clear()?;
-                break (setup, Some(engine));
-            }
-            Err(err) => {
-                terminal.clear()?;
-                state.voice_failed(err);
-            }
-        }
+    let setup = match run_setup(terminal, &mut state)? {
+        Some(config) => config,
+        None => return Ok(false),
     };
 
     let game_config = setup.game;
@@ -95,7 +69,6 @@ fn run(
             game_config.clone(),
             duration,
             use_small_text,
-            voice.as_ref(),
             mult_choice,
             wrong_penalty,
         )?;

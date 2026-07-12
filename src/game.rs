@@ -1,6 +1,6 @@
 use std::error::Error;
 use std::io;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crossterm::event::{
     self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseButton,
@@ -16,14 +16,12 @@ use ratatui::widgets::{Block, Borders, Paragraph};
 use tui_big_text::{BigText, PixelSize};
 
 use crate::model::{App, GameConfig};
-use crate::voice::{VoiceEngine, VoiceEvent};
 
 pub fn run_game(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     config: GameConfig,
     duration: Duration,
     use_small_text: bool,
-    voice: Option<&VoiceEngine>,
     mult_choice: bool,
     wrong_penalty: i32,
 ) -> Result<App, Box<dyn Error>> {
@@ -35,20 +33,6 @@ pub fn run_game(
     }
     // Grid cell areas from the last frame, for click hit-testing.
     let mut option_rects: [Rect; 4] = [Rect::default(); 4];
-    let mut voice_latencies: Vec<Duration> = Vec::new();
-    // A voice answer that advanced a question, awaiting its latency report
-    // (which arrives once the utterance finalizes): value, when it was
-    // applied, and the history index it advanced.
-    let mut pending_latency: Option<(i32, Instant, usize)> = None;
-
-    // Discard any recognition results left over from a previous round.
-    if let Some(engine) = voice {
-        while engine.events.try_recv().is_ok() {}
-    }
-
-    // With voice on, poll faster so a recognition result isn't stuck waiting
-    // out the keyboard poll (part of the speech-to-answer latency budget).
-    let poll_timeout = Duration::from_millis(if voice.is_some() { 15 } else { 50 });
 
     while !app.is_done() {
         terminal.draw(|frame| {
@@ -86,17 +70,6 @@ pub fn run_game(
                     format!("{}/{}", app.history.len() + 1, limit),
                     Style::default()
                         .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
-                ));
-            }
-            if let Some(last) = voice_latencies.last() {
-                let avg = voice_latencies.iter().sum::<Duration>().as_millis()
-                    / voice_latencies.len() as u128;
-                header_spans.push(Span::raw("    Voice: "));
-                header_spans.push(Span::styled(
-                    format!("{}ms (avg {}ms)", last.as_millis(), avg),
-                    Style::default()
-                        .fg(Color::Magenta)
                         .add_modifier(Modifier::BOLD),
                 ));
             }
@@ -175,19 +148,16 @@ pub fn run_game(
                     }
                 }
             } else {
-                let input_title = if voice.is_some() {
-                    "Answer (Esc to quit, voice on)"
-                } else {
-                    "Answer (Esc to quit)"
-                };
                 let input = Paragraph::new(app.input.clone()).block(
-                    Block::default().title(input_title).borders(Borders::ALL),
+                    Block::default()
+                        .title("Answer (Esc to quit)")
+                        .borders(Borders::ALL),
                 );
                 frame.render_widget(input, chunks[2]);
             }
         })?;
 
-        if event::poll(poll_timeout)? {
+        if event::poll(Duration::from_millis(50))? {
             match event::read()? {
                 Event::Key(key) if key.kind == KeyEventKind::Press && mult_choice => {
                     match key.code {
@@ -226,37 +196,6 @@ pub fn run_game(
                     }
                 }
                 _ => {}
-            }
-        }
-
-        if let Some(engine) = voice {
-            while let Ok(event) = engine.events.try_recv() {
-                match event {
-                    VoiceEvent::Answer { value } => {
-                        app.input = value.to_string();
-                        let score_before = app.score;
-                        app.try_advance_if_correct();
-                        if app.score > score_before {
-                            pending_latency =
-                                Some((value, Instant::now(), app.history.len() - 1));
-                        }
-                    }
-                    VoiceEvent::Latency {
-                        value,
-                        speech_ended_at,
-                    } => {
-                        if let Some((pending_value, applied_at, idx)) = pending_latency.take() {
-                            if pending_value == value {
-                                let latency =
-                                    applied_at.saturating_duration_since(speech_ended_at);
-                                voice_latencies.push(latency);
-                                if let Some(record) = app.history.get_mut(idx) {
-                                    record.voice_latency = Some(latency);
-                                }
-                            }
-                        }
-                    }
-                }
             }
         }
     }

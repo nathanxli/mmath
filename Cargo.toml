@@ -3,19 +3,8 @@ name = "mmath"
 version = "0.1.0"
 edition = "2024"
 
-[features]
-default = []
-# Voice answering. Requires the native libvosk in ./lib, fetched by
-# scripts/fetch-voice-assets.sh.
-voice = ["dep:vosk", "dep:cpal"]
-
 [dependencies]
-cpal = { version = "0.15", optional = true }
 crossterm = "0.29"
 rand = "0.9"
 ratatui = "0.29"
 tui-big-text = "0.7.0"
-vosk = { version = "0.3", optional = true }
-
-[dev-dependencies]
-hound = "3"

@@ -15,7 +15,6 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Padding, Paragraph};
 
 use crate::model::{ADD_MIN, GameConfig, GameMode, MUL_MIN};
-use crate::voice;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum SetupField {
@@ -31,7 +30,6 @@ enum SetupField {
     MulHighRight,
     TimeSeconds,
     LargeText,
-    Voice,
     MultChoice,
     WrongPenalty,
     Start,
@@ -40,7 +38,6 @@ enum SetupField {
 pub struct SetupConfig {
     pub game: GameConfig,
     pub duration: Duration,
-    pub voice_enabled: bool,
     pub mult_choice: bool,
     pub wrong_penalty: i32,
     pub large_text: bool,
@@ -61,7 +58,6 @@ pub struct SetupState {
     mul_high_right_edited: bool,
     time_input: String,
     time_edited: bool,
-    voice_enabled: bool,
     mult_choice: bool,
     penalize_wrong: bool,
     large_text: bool,
@@ -69,8 +65,7 @@ pub struct SetupState {
 }
 
 impl SetupState {
-    pub fn new(voice_default: bool, mult_choice_default: bool, large_text_default: bool) -> Self {
-        let voice_wanted = voice_default && !mult_choice_default;
+    pub fn new(mult_choice_default: bool, large_text_default: bool) -> Self {
         Self {
             focus: SetupField::ModeMentalMath,
             mode: GameMode::MentalMath,
@@ -86,25 +81,11 @@ impl SetupState {
             mul_high_right_edited: false,
             time_input: String::from("120"),
             time_edited: false,
-            // Voice and multiple-choice are mutually exclusive; -m wins if
-            // both flags are given.
-            voice_enabled: voice_wanted && voice::AVAILABLE,
             mult_choice: mult_choice_default,
             penalize_wrong: false,
             large_text: large_text_default,
-            message: if voice_wanted && !voice::AVAILABLE {
-                String::from(voice::UNSUPPORTED)
-            } else {
-                String::from("Set ranges and time, then start.")
-            },
+            message: String::from("Set ranges and time, then start."),
         }
-    }
-
-    /// Voice startup failed at runtime (missing model, no microphone). Drop back
-    /// into the menu with the reason rather than killing the session.
-    pub fn voice_failed(&mut self, err: String) {
-        self.voice_enabled = false;
-        self.message = format!("Voice unavailable: {}", err);
     }
 
     /// The focusable fields for the current gamemode, in navigation order:
@@ -128,9 +109,6 @@ impl SetupState {
             ]);
         }
         fields.push(SetupField::LargeText);
-        if self.mode == GameMode::MentalMath {
-            fields.push(SetupField::Voice);
-        }
         // Optiver is always multiple choice with a -1 penalty, so those
         // toggles are fixed rather than focusable.
         if self.mode != GameMode::Optiver80 {
@@ -156,9 +134,6 @@ impl SetupState {
     /// mode.
     fn select_mode(&mut self, mode: GameMode) {
         self.mode = mode;
-        if mode != GameMode::MentalMath {
-            self.voice_enabled = false;
-        }
         if mode == GameMode::Optiver80 {
             self.mult_choice = true;
             self.penalize_wrong = true;
@@ -194,7 +169,6 @@ impl SetupState {
             }
             SetupField::TimeSeconds => Some((&mut self.time_input, &mut self.time_edited)),
             SetupField::LargeText => None,
-            SetupField::Voice => None,
             SetupField::MultChoice => None,
             SetupField::WrongPenalty => None,
             SetupField::Start => None,
@@ -235,26 +209,8 @@ impl SetupState {
                 self.large_text = !self.large_text;
                 true
             }
-            SetupField::Voice => {
-                if !voice::AVAILABLE {
-                    self.message = String::from(voice::UNSUPPORTED);
-                    return true;
-                }
-                if self.mode != GameMode::MentalMath {
-                    self.message = String::from("Voice input is only available in Mental Math.");
-                    return true;
-                }
-                self.voice_enabled = !self.voice_enabled;
-                if self.voice_enabled {
-                    self.mult_choice = false;
-                }
-                true
-            }
             SetupField::MultChoice => {
                 self.mult_choice = !self.mult_choice;
-                if self.mult_choice {
-                    self.voice_enabled = false;
-                }
                 true
             }
             SetupField::WrongPenalty => {
@@ -320,7 +276,6 @@ impl SetupState {
         Ok(SetupConfig {
             game: config,
             duration: Duration::from_secs(time_seconds),
-            voice_enabled: self.voice_enabled && self.mode == GameMode::MentalMath,
             mult_choice: self.mult_choice || optiver,
             wrong_penalty: if self.penalize_wrong || optiver { -1 } else { 0 },
             large_text: self.large_text,
@@ -328,8 +283,8 @@ impl SetupState {
     }
 }
 
-/// Takes the state by reference so a caller can re-enter the menu (e.g. after
-/// voice startup fails) without discarding the ranges the user already typed.
+/// Takes the state by reference so a caller can re-enter the menu without
+/// discarding the ranges the user already typed.
 pub fn run_setup(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     setup: &mut SetupState,
@@ -535,12 +490,6 @@ fn render_options_column(
             large_text_line(setup.large_text, setup.focus == SetupField::LargeText),
             Some(SetupField::LargeText),
         )];
-        if mental_math {
-            lines.push((
-                voice_line(setup.voice_enabled, setup.focus == SetupField::Voice),
-                Some(SetupField::Voice),
-            ));
-        }
         if optiver {
             let dim = Style::default().fg(Color::DarkGray);
             lines.push((
@@ -789,32 +738,6 @@ fn large_text_line(enabled: bool, focused: bool) -> Line<'static> {
     ])
 }
 
-fn voice_line(enabled: bool, focused: bool) -> Line<'static> {
-    if !voice::AVAILABLE {
-        let dim = Style::default().fg(Color::DarkGray);
-        let label_style = if focused {
-            dim.add_modifier(Modifier::BOLD)
-        } else {
-            dim
-        };
-        return Line::from(vec![
-            Span::styled("Voice input:  ", label_style),
-            Span::styled("[ ]  (--features voice)", dim),
-        ]);
-    }
-    let label_style = if focused {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
-    Line::from(vec![
-        Span::styled("Voice input:  ", label_style),
-        mode_span("", enabled, focused),
-    ])
-}
-
 fn mult_choice_line(enabled: bool, focused: bool) -> Line<'static> {
     let label_style = if focused {
         Style::default()
@@ -850,73 +773,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn voice_flag_only_takes_effect_when_compiled_in() {
-        let state = SetupState::new(true, false, true);
-        assert_eq!(state.voice_enabled, voice::AVAILABLE);
-        if !voice::AVAILABLE {
-            assert_eq!(state.message, voice::UNSUPPORTED);
-        }
-    }
-
-    #[test]
-    fn toggling_voice_is_a_noop_without_support() {
-        let mut state = SetupState::new(false, false, true);
-        state.focus = SetupField::Voice;
-        assert!(
-            state.toggle_focused_mode(),
-            "toggle should request a redraw"
-        );
-        assert_eq!(state.voice_enabled, voice::AVAILABLE);
-    }
-
-    #[test]
-    fn voice_failure_disables_voice_and_reports_reason() {
-        let mut state = SetupState::new(false, false, true);
-        state.voice_enabled = true;
-        state.voice_failed(String::from("no Vosk model found"));
-        assert!(!state.voice_enabled);
-        assert!(state.message.contains("no Vosk model found"));
-    }
-
-    #[cfg(not(feature = "voice"))]
-    #[test]
-    fn voice_row_shows_rebuild_hint() {
-        use ratatui::backend::TestBackend;
-        let mut terminal = Terminal::new(TestBackend::new(60, 1)).unwrap();
-        terminal
-            .draw(|frame| {
-                frame.render_widget(Paragraph::new(vec![voice_line(false, false)]), frame.area())
-            })
-            .unwrap();
-        let rendered: String = terminal
-            .backend()
-            .buffer()
-            .content
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect();
-        assert!(
-            rendered.contains("--features voice"),
-            "{rendered}"
-        );
-    }
-
-    #[test]
-    fn mult_choice_flag_wins_over_voice() {
-        let state = SetupState::new(true, true, true);
-        assert!(!state.voice_enabled);
-        assert!(state.mult_choice);
-    }
-
-    #[test]
     fn sequences_mode_hides_mental_math_fields() {
-        let mut state = SetupState::new(false, false, true);
+        let mut state = SetupState::new(false, true);
         state.focus = SetupField::ModeSequences;
         state.toggle_focused_mode();
         let order = state.field_order();
         assert!(!order.contains(&SetupField::AddMode));
         assert!(!order.contains(&SetupField::AddHigh));
-        assert!(!order.contains(&SetupField::Voice));
         // Navigation wraps through exactly the visible fields.
         for _ in 0..order.len() {
             state.focus_next();
@@ -926,14 +789,13 @@ mod tests {
 
     #[test]
     fn optiver_forces_mult_choice_penalty_and_test_duration() {
-        let mut state = SetupState::new(false, false, true);
+        let mut state = SetupState::new(false, true);
         state.focus = SetupField::ModeOptiver;
         state.toggle_focused_mode();
         assert_eq!(state.time_input, "480");
         let order = state.field_order();
         assert!(!order.contains(&SetupField::MultChoice));
         assert!(!order.contains(&SetupField::WrongPenalty));
-        assert!(!order.contains(&SetupField::Voice));
         let config = state.parse_config().expect("optiver config should parse");
         assert!(config.game.mode == GameMode::Optiver80);
         assert!(config.mult_choice);
@@ -943,7 +805,7 @@ mod tests {
 
     #[test]
     fn user_edited_time_survives_mode_switch() {
-        let mut state = SetupState::new(false, false, true);
+        let mut state = SetupState::new(false, true);
         state.time_input = String::from("60");
         state.time_edited = true;
         state.focus = SetupField::ModeOptiver;
@@ -952,9 +814,8 @@ mod tests {
     }
 
     #[test]
-    fn sequences_start_ignores_range_inputs_and_voice() {
-        let mut state = SetupState::new(false, false, true);
-        state.voice_enabled = voice::AVAILABLE;
+    fn sequences_start_ignores_range_inputs() {
+        let mut state = SetupState::new(false, true);
         state.focus = SetupField::ModeSequences;
         state.toggle_focused_mode();
         // A range input left in an invalid state must not block other modes.
@@ -963,6 +824,5 @@ mod tests {
             .parse_config()
             .expect("sequences must not validate mental math ranges");
         assert!(config.game.mode == GameMode::Sequences);
-        assert!(!config.voice_enabled);
     }
 }

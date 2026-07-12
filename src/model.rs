@@ -77,9 +77,6 @@ pub struct QuestionRecord {
     pub prompt: String,
     pub elapsed: Duration,
     pub correct: bool,
-    /// End-of-speech-to-answer latency (recognition + input pipeline),
-    /// recorded for voice answers.
-    pub voice_latency: Option<Duration>,
 }
 
 #[derive(Clone)]
@@ -349,7 +346,6 @@ impl App {
                     prompt: self.current.resolved_prompt(),
                     elapsed,
                     correct: true,
-                    voice_latency: None,
                 });
                 self.score += 1;
                 self.current = self.generator.next();
@@ -370,7 +366,6 @@ impl App {
             prompt: self.current.resolved_prompt(),
             elapsed: self.question_started_at.elapsed(),
             correct,
-            voice_latency: None,
         });
         if correct {
             self.score += 1;

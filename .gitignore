@@ -1,7 +1,7 @@
 # Build output
 /target
 
-# Voice assets fetched by scripts/fetch-voice-assets.sh
+# Voice assets used by the `voice` branch (fetched by its scripts/fetch-voice-assets.sh)
 /lib
 /models
 

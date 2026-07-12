@@ -116,8 +116,7 @@ pub fn run_results(
                     } else {
                         Style::default()
                     };
-                    // Fixed-width columns so times line up across rows,
-                    // including rows without voice data.
+                    // Fixed-width columns so times line up across rows.
                     let mut spans = vec![
                         Span::raw(format!(
                             "{:>3}. {:<width$}  ",
@@ -136,19 +135,6 @@ pub fn run_results(
                         spans.push(Span::styled(
                             format!("  {}", mark),
                             Style::default().fg(color).add_modifier(Modifier::BOLD),
-                        ));
-                    }
-                    if let Some(latency) = record.voice_latency {
-                        spans.push(Span::styled(
-                            format!("   voice {:>4}ms", latency.as_millis()),
-                            Style::default().fg(Color::Magenta),
-                        ));
-                        spans.push(Span::styled(
-                            format!(
-                                "   adj {:>7}",
-                                format_elapsed(record.elapsed.saturating_sub(latency))
-                            ),
-                            Style::default().fg(Color::Cyan),
                         ));
                     }
                     history_lines.push(Line::from(spans));
