@@ -26,11 +26,9 @@ const MAX_RECENT_SCORES: usize = 10;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
-    // -s presets the "Large text" setup toggle to off.
-    let large_text_default = !args.iter().any(|arg| arg == "-s");
     let mult_choice_default = args.iter().any(|arg| arg == "-m" || arg == "--mult-choice");
     let mut terminal = init_terminal()?;
-    let result = run(&mut terminal, large_text_default, mult_choice_default);
+    let result = run(&mut terminal, mult_choice_default);
     restore_terminal(&mut terminal)?;
 
     match result {
@@ -46,10 +44,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 /// Returns false if the user canceled at the setup menu.
 fn run(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    large_text_default: bool,
     mult_choice_default: bool,
 ) -> Result<bool, Box<dyn Error>> {
-    let mut state = SetupState::new(mult_choice_default, large_text_default);
+    let mut state = SetupState::new(mult_choice_default);
 
     let setup = match run_setup(terminal, &mut state)? {
         Some(config) => config,

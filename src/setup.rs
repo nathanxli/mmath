@@ -46,6 +46,8 @@ pub struct SetupConfig {
 pub struct SetupState {
     focus: SetupField,
     mode: GameMode,
+    /// Seeds the multiple-choice default for every non-Optiver mode (`-m`).
+    mult_choice_default: bool,
     add_enabled: bool,
     sub_enabled: bool,
     mul_enabled: bool,
@@ -65,27 +67,57 @@ pub struct SetupState {
 }
 
 impl SetupState {
-    pub fn new(mult_choice_default: bool, large_text_default: bool) -> Self {
-        Self {
+    pub fn new(mult_choice_default: bool) -> Self {
+        let mut state = Self {
             focus: SetupField::ModeMentalMath,
             mode: GameMode::MentalMath,
+            mult_choice_default,
             add_enabled: true,
             sub_enabled: true,
             mul_enabled: true,
             div_enabled: true,
-            add_high_input: String::from("100"),
+            add_high_input: String::new(),
             add_high_edited: false,
-            mul_high_left_input: String::from("12"),
+            mul_high_left_input: String::new(),
             mul_high_left_edited: false,
-            mul_high_right_input: String::from("100"),
+            mul_high_right_input: String::new(),
             mul_high_right_edited: false,
-            time_input: String::from("120"),
+            time_input: String::new(),
             time_edited: false,
-            mult_choice: mult_choice_default,
+            mult_choice: false,
             penalize_wrong: false,
-            large_text: large_text_default,
+            large_text: false,
             message: String::from("Set ranges and time, then start."),
-        }
+        };
+        state.apply_mode_defaults();
+        state
+    }
+
+    /// Reset every option to the current gamemode's default. Called on entry and
+    /// whenever the gamemode changes, so options never carry over edits that
+    /// were made for a different mode.
+    fn apply_mode_defaults(&mut self) {
+        let optiver = self.mode == GameMode::Optiver80;
+        self.add_enabled = true;
+        self.sub_enabled = true;
+        self.mul_enabled = true;
+        self.div_enabled = true;
+        self.add_high_input = String::from("100");
+        self.add_high_edited = false;
+        self.mul_high_left_input = String::from("12");
+        self.mul_high_left_edited = false;
+        self.mul_high_right_input = String::from("100");
+        self.mul_high_right_edited = false;
+        self.time_input = match self.mode {
+            GameMode::Optiver80 => crate::optiver::DEFAULT_SECONDS.to_string(),
+            _ => String::from("120"),
+        };
+        self.time_edited = false;
+        // Optiver is locked to the real test's format: multiple choice with a
+        // -1 penalty for a wrong answer.
+        self.mult_choice = optiver || self.mult_choice_default;
+        self.penalize_wrong = optiver;
+        self.large_text = false;
     }
 
     /// The focusable fields for the current gamemode, in navigation order:
@@ -97,6 +129,15 @@ impl SetupState {
             SetupField::ModeOptiver,
             SetupField::TimeSeconds,
         ];
+        // Optiver is always multiple choice with a -1 penalty, so those
+        // toggles are fixed rather than focusable. The penalty only applies to
+        // multiple-choice answers, so it drops out when that is off.
+        if self.mode != GameMode::Optiver80 {
+            fields.push(SetupField::MultChoice);
+            if self.mult_choice {
+                fields.push(SetupField::WrongPenalty);
+            }
+        }
         if self.mode == GameMode::MentalMath {
             fields.extend([
                 SetupField::AddMode,
@@ -109,11 +150,6 @@ impl SetupState {
             ]);
         }
         fields.push(SetupField::LargeText);
-        // Optiver is always multiple choice with a -1 penalty, so those
-        // toggles are fixed rather than focusable.
-        if self.mode != GameMode::Optiver80 {
-            fields.extend([SetupField::MultChoice, SetupField::WrongPenalty]);
-        }
         fields.push(SetupField::Start);
         fields
     }
@@ -130,21 +166,15 @@ impl SetupState {
         self.focus = order[(idx + order.len() - 1) % order.len()];
     }
 
-    /// Switch gamemode, dropping focus/settings that don't exist in the new
-    /// mode.
+    /// Switch gamemode. Every option resets to the new mode's default -- an edit
+    /// made for one mode should never leak into another -- and focus falls back
+    /// to Start if it landed on a field the new mode doesn't show.
     fn select_mode(&mut self, mode: GameMode) {
+        if self.mode == mode {
+            return;
+        }
         self.mode = mode;
-        if mode == GameMode::Optiver80 {
-            self.mult_choice = true;
-            self.penalize_wrong = true;
-        }
-        // Swap in the mode's natural duration unless the user typed one.
-        if !self.time_edited {
-            self.time_input = match mode {
-                GameMode::Optiver80 => crate::optiver::DEFAULT_SECONDS.to_string(),
-                _ => String::from("120"),
-            };
-        }
+        self.apply_mode_defaults();
         if !self.field_order().contains(&self.focus) {
             self.focus = SetupField::Start;
         }
@@ -314,7 +344,7 @@ fn run_setup_loop(
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(1),  // help line
-                    Constraint::Min(22),    // single-column body
+                    Constraint::Min(23),    // single-column body
                     Constraint::Length(3),  // Start button
                     Constraint::Length(3),  // status bar
                 ])
@@ -473,8 +503,8 @@ fn render_gamemode_column(
     }
 }
 
-/// Right column: the options for the selected gamemode. Time and the Options
-/// toggles are always present; Operations and Ranges are Mental Math only.
+/// Right column: the options for the selected gamemode. Time, Multiple choice
+/// and Text are always present; Operations and Ranges are Mental Math only.
 fn render_options_column(
     frame: &mut ratatui::Frame,
     area: Rect,
@@ -484,45 +514,15 @@ fn render_options_column(
     let mental_math = setup.mode == GameMode::MentalMath;
     let optiver = setup.mode == GameMode::Optiver80;
 
-    // `None` fields are fixed-format info rows, not clickable toggles.
-    let option_lines: Vec<(Line, Option<SetupField>)> = {
-        let mut lines = vec![(
-            large_text_line(setup.large_text, setup.focus == SetupField::LargeText),
-            Some(SetupField::LargeText),
-        )];
-        if optiver {
-            let dim = Style::default().fg(Color::DarkGray);
-            lines.push((
-                Line::from(Span::styled("Mult choice:  always on", dim)),
-                None,
-            ));
-            lines.push((
-                Line::from(Span::styled("Penalty −1:   always on", dim)),
-                None,
-            ));
-        } else {
-            lines.push((
-                mult_choice_line(setup.mult_choice, setup.focus == SetupField::MultChoice),
-                Some(SetupField::MultChoice),
-            ));
-            lines.push((
-                penalty_line(
-                    setup.penalize_wrong,
-                    setup.focus == SetupField::WrongPenalty,
-                    setup.mult_choice,
-                ),
-                Some(SetupField::WrongPenalty),
-            ));
-        }
-        lines
-    };
-
-    let mut constraints = vec![Constraint::Length(3)]; // Time
+    let mut constraints = vec![
+        Constraint::Length(3), // Time
+        Constraint::Length(4), // Multiple choice (toggle + penalty)
+    ];
     if mental_math {
         constraints.push(Constraint::Length(8)); // Operations
         constraints.push(Constraint::Length(5)); // Ranges
     }
-    constraints.push(Constraint::Length(option_lines.len() as u16 + 2)); // Options
+    constraints.push(Constraint::Length(3)); // Text
     constraints.push(Constraint::Min(0));
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -545,6 +545,64 @@ fn render_options_column(
         time_inner,
     );
     click_targets.push((rows[row], SetupField::TimeSeconds));
+    row += 1;
+
+    // --- Multiple choice, with the wrong-answer penalty that only applies to
+    // it. Both are fixed on for Optiver, so neither is clickable there. ---
+    let mult_block = Block::default()
+        .title("Multiple choice")
+        .borders(Borders::ALL)
+        .padding(Padding::left(1));
+    let mult_inner = mult_block.inner(rows[row]);
+    frame.render_widget(mult_block, rows[row]);
+
+    let mult_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Length(1)])
+        .split(mult_inner);
+
+    let dim = Style::default().fg(Color::DarkGray);
+    let (mult_value, penalty_value) = if optiver {
+        (
+            Span::styled("always on", dim),
+            Span::styled("always on", dim),
+        )
+    } else {
+        (
+            mode_span("", setup.mult_choice, setup.focus == SetupField::MultChoice),
+            penalty_span(
+                setup.penalize_wrong,
+                setup.focus == SetupField::WrongPenalty,
+                setup.mult_choice,
+            ),
+        )
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![Span::raw("Enabled     "), mult_value])),
+        mult_rows[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "Penalty −1  ",
+                if optiver || setup.mult_choice {
+                    Style::default()
+                } else {
+                    dim
+                },
+            ),
+            penalty_value,
+        ])),
+        mult_rows[1],
+    );
+    if !optiver {
+        click_targets.push((mult_rows[0], SetupField::MultChoice));
+        // The penalty is inert without multiple choice, so it is not clickable
+        // then either -- matching its "[n/a]" display.
+        if setup.mult_choice {
+            click_targets.push((mult_rows[1], SetupField::WrongPenalty));
+        }
+    }
     row += 1;
 
     if mental_math {
@@ -637,25 +695,21 @@ fn render_options_column(
         }
     }
 
-    // --- Options: one clickable toggle per row. ---
-    let opts_block = Block::default()
-        .title("Options")
+    // --- Text. ---
+    let text_block = Block::default()
+        .title("Text")
         .borders(Borders::ALL)
         .padding(Padding::left(1));
-    let opts_inner = opts_block.inner(rows[row]);
-    frame.render_widget(opts_block, rows[row]);
-
-    let opt_rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(vec![Constraint::Length(1); option_lines.len()])
-        .split(opts_inner);
-
-    for (idx, (line, field)) in option_lines.into_iter().enumerate() {
-        frame.render_widget(Paragraph::new(line), opt_rows[idx]);
-        if let Some(field) = field {
-            click_targets.push((opt_rows[idx], field));
-        }
-    }
+    let text_inner = text_block.inner(rows[row]);
+    frame.render_widget(text_block, rows[row]);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw("Large text  "),
+            mode_span("", setup.large_text, setup.focus == SetupField::LargeText),
+        ])),
+        text_inner,
+    );
+    click_targets.push((rows[row], SetupField::LargeText));
 }
 
 fn render_start_button(frame: &mut ratatui::Frame, area: Rect, focused: bool) {
@@ -724,59 +778,30 @@ fn mode_span(symbol: &str, enabled: bool, focused: bool) -> Span<'static> {
     Span::styled(text, style)
 }
 
-fn large_text_line(enabled: bool, focused: bool) -> Line<'static> {
-    let label_style = if focused {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
+/// The wrong-answer penalty. It can only bite on a multiple-choice answer, so
+/// without multiple choice it reads as an inert "[n/a]" rather than on/off.
+fn penalty_span(enabled: bool, focused: bool, mult_choice_on: bool) -> Span<'static> {
+    if mult_choice_on {
+        mode_span("", enabled, focused)
     } else {
-        Style::default()
-    };
-    Line::from(vec![
-        Span::styled("Large text:   ", label_style),
-        mode_span("", enabled, focused),
-    ])
-}
-
-fn mult_choice_line(enabled: bool, focused: bool) -> Line<'static> {
-    let label_style = if focused {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-    };
-    Line::from(vec![
-        Span::styled("Mult choice:  ", label_style),
-        mode_span("", enabled, focused),
-    ])
-}
-
-fn penalty_line(enabled: bool, focused: bool, mult_choice_on: bool) -> Line<'static> {
-    let label_style = if focused {
-        Style::default()
-            .fg(Color::Yellow)
-            .add_modifier(Modifier::BOLD)
-    } else if !mult_choice_on {
-        Style::default().fg(Color::DarkGray)
-    } else {
-        Style::default()
-    };
-    Line::from(vec![
-        Span::styled("Penalty −1:   ", label_style),
-        mode_span("", enabled, focused),
-    ])
+        Span::styled("[n/a]", Style::default().fg(Color::DarkGray))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Focus the gamemode's cell and activate it, as a click or Space would.
+    fn switch_to(state: &mut SetupState, field: SetupField) {
+        state.focus = field;
+        state.toggle_focused_mode();
+    }
+
     #[test]
     fn sequences_mode_hides_mental_math_fields() {
-        let mut state = SetupState::new(false, true);
-        state.focus = SetupField::ModeSequences;
-        state.toggle_focused_mode();
+        let mut state = SetupState::new(false);
+        switch_to(&mut state, SetupField::ModeSequences);
         let order = state.field_order();
         assert!(!order.contains(&SetupField::AddMode));
         assert!(!order.contains(&SetupField::AddHigh));
@@ -788,10 +813,31 @@ mod tests {
     }
 
     #[test]
+    fn defaults_are_typed_text_and_single_answer() {
+        let state = SetupState::new(false);
+        assert!(!state.large_text);
+        assert!(!state.mult_choice);
+        assert!(!state.penalize_wrong);
+        let config = state.parse_config().expect("default config should parse");
+        assert!(!config.large_text);
+        assert!(!config.mult_choice);
+    }
+
+    #[test]
+    fn penalty_is_only_reachable_with_multiple_choice_on() {
+        let mut state = SetupState::new(false);
+        assert!(!state.mult_choice);
+        assert!(!state.field_order().contains(&SetupField::WrongPenalty));
+
+        switch_to(&mut state, SetupField::MultChoice);
+        assert!(state.mult_choice);
+        assert!(state.field_order().contains(&SetupField::WrongPenalty));
+    }
+
+    #[test]
     fn optiver_forces_mult_choice_penalty_and_test_duration() {
-        let mut state = SetupState::new(false, true);
-        state.focus = SetupField::ModeOptiver;
-        state.toggle_focused_mode();
+        let mut state = SetupState::new(false);
+        switch_to(&mut state, SetupField::ModeOptiver);
         assert_eq!(state.time_input, "480");
         let order = state.field_order();
         assert!(!order.contains(&SetupField::MultChoice));
@@ -804,20 +850,55 @@ mod tests {
     }
 
     #[test]
-    fn user_edited_time_survives_mode_switch() {
-        let mut state = SetupState::new(false, true);
+    fn switching_gamemode_restores_that_modes_defaults() {
+        let mut state = SetupState::new(false);
+        // Edit a spread of options under Mental Math...
         state.time_input = String::from("60");
         state.time_edited = true;
-        state.focus = SetupField::ModeOptiver;
-        state.toggle_focused_mode();
+        state.add_high_input = String::from("999");
+        state.add_high_edited = true;
+        state.mul_enabled = false;
+        state.mult_choice = true;
+        state.large_text = true;
+
+        // ...then take the Optiver detour, which has its own defaults...
+        switch_to(&mut state, SetupField::ModeOptiver);
+        assert_eq!(state.time_input, "480");
+        assert!(state.mult_choice);
+        assert!(state.penalize_wrong);
+        assert!(!state.large_text);
+
+        // ...and back: none of the earlier edits may leak through.
+        switch_to(&mut state, SetupField::ModeMentalMath);
+        assert_eq!(state.time_input, "120");
+        assert_eq!(state.add_high_input, "100");
+        assert!(state.mul_enabled);
+        assert!(!state.mult_choice);
+        assert!(!state.penalize_wrong);
+        assert!(!state.large_text);
+    }
+
+    #[test]
+    fn reselecting_the_current_gamemode_keeps_edits() {
+        let mut state = SetupState::new(false);
+        state.time_input = String::from("60");
+        state.time_edited = true;
+        switch_to(&mut state, SetupField::ModeMentalMath);
         assert_eq!(state.time_input, "60");
     }
 
     #[test]
+    fn mult_choice_flag_seeds_every_non_optiver_mode() {
+        let mut state = SetupState::new(true);
+        assert!(state.mult_choice);
+        switch_to(&mut state, SetupField::ModeSequences);
+        assert!(state.mult_choice);
+    }
+
+    #[test]
     fn sequences_start_ignores_range_inputs() {
-        let mut state = SetupState::new(false, true);
-        state.focus = SetupField::ModeSequences;
-        state.toggle_focused_mode();
+        let mut state = SetupState::new(false);
+        switch_to(&mut state, SetupField::ModeSequences);
         // A range input left in an invalid state must not block other modes.
         state.add_high_input = String::new();
         let config = state
