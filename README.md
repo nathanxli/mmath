@@ -54,10 +54,7 @@ Everything is configurable in the start menu. Flags just preset a toggle:
 | Flag | Effect |
 | --- | --- |
 | `-m`, `--mult-choice` | Multiple choice: pick from a 2x2 grid by click or keys 1-4 |
-| `-s` | Small text (large text is on by default) |
 
-Voice input (offline speech recognition via Vosk) lives on the `voice`
-branch; it is not part of the default install.
 
 ## Uninstall
 
