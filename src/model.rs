@@ -3,6 +3,8 @@ use std::time::{Duration, Instant};
 use rand::Rng;
 use rand::seq::SliceRandom;
 
+use crate::fracpct;
+use crate::numfmt;
 use crate::optiver;
 use crate::sequences;
 
@@ -40,6 +42,7 @@ enum Op {
 pub enum GameMode {
     MentalMath,
     Sequences,
+    FracPct,
     Optiver80,
 }
 
@@ -48,16 +51,60 @@ impl GameMode {
         match self {
             GameMode::MentalMath => "Mental Math",
             GameMode::Sequences => "Sequences",
+            GameMode::FracPct => "Fraction ↔ Percent",
             GameMode::Optiver80 => "Optiver 80 in 8",
         }
     }
 }
 
+/// How typed input is checked against the current question.
+#[derive(Clone, Copy)]
+pub enum TypedAnswer {
+    Int(i32),
+    /// An exact rational value (`num / den`): a fraction or a decimal
+    /// percentage. Any equivalent typed form is accepted.
+    Rational(i64, i64),
+    /// Multiple-choice only (Optiver): typed input never matches.
+    None,
+}
+
+impl TypedAnswer {
+    fn matches(self, input: &str) -> bool {
+        match self {
+            TypedAnswer::Int(v) => input.parse::<i32>() == Ok(v),
+            TypedAnswer::Rational(num, den) => parse_rational(input)
+                .is_some_and(|(n, d)| n as i128 * den as i128 == num as i128 * d as i128),
+            TypedAnswer::None => false,
+        }
+    }
+}
+
+/// Parse typed input as an exact rational: "7/20", "12.5", or "35".
+/// Returns None for anything incomplete or malformed.
+fn parse_rational(s: &str) -> Option<(i64, i64)> {
+    if let Some((num, den)) = s.split_once('/') {
+        let num = num.parse::<i64>().ok()?;
+        let den = den.parse::<i64>().ok()?;
+        (den != 0).then_some((num, den))
+    } else if let Some((int, frac)) = s.split_once('.') {
+        // More precision than any answer needs; also guards against overflow.
+        if frac.is_empty() || frac.len() > 6 {
+            return None;
+        }
+        let scale = 10i64.pow(frac.len() as u32);
+        let int: i64 = if int.is_empty() { 0 } else { int.parse().ok()? };
+        let frac: i64 = frac.parse().ok()?;
+        Some((int * scale + frac, scale))
+    } else {
+        s.parse::<i64>().ok().map(|v| (v, 1))
+    }
+}
+
 pub struct Question {
     pub prompt: String,
-    /// Numeric answer for typed input. Unused in Optiver mode, which is
-    /// multiple-choice only and may have non-integer answers.
-    answer: i32,
+    /// How typed input is checked; multiple-choice answers compare against
+    /// `answer_text` instead.
+    answer: TypedAnswer,
     /// The answer as displayed: matches one multiple-choice option exactly.
     pub answer_text: String,
     /// The 2x2 answer grid (one entry equals `answer_text`), present in
@@ -160,6 +207,7 @@ impl QuestionGenerator {
         match self.config.mode {
             GameMode::MentalMath => self.next_mental_math(),
             GameMode::Sequences => self.next_sequence(),
+            GameMode::FracPct => self.next_fracpct(),
             GameMode::Optiver80 => self.next_optiver(),
         }
     }
@@ -172,8 +220,21 @@ impl QuestionGenerator {
         });
         Question {
             prompt: seq.prompt,
-            answer: seq.answer,
+            answer: TypedAnswer::Int(seq.answer),
             answer_text: seq.answer.to_string(),
+            options,
+        }
+    }
+
+    fn next_fracpct(&mut self) -> Question {
+        let q = fracpct::generate(&mut self.rng);
+        let options = self
+            .mult_choice
+            .then(|| numfmt::build_options(&mut self.rng, &q.answer_text, &q.candidates));
+        Question {
+            prompt: q.prompt,
+            answer: TypedAnswer::Rational(q.answer_num, q.answer_den),
+            answer_text: q.answer_text,
             options,
         }
     }
@@ -182,7 +243,7 @@ impl QuestionGenerator {
         let q = optiver::generate(&mut self.rng);
         Question {
             prompt: q.prompt,
-            answer: 0,
+            answer: TypedAnswer::None,
             answer_text: q.answer_text,
             options: Some(q.options),
         }
@@ -272,7 +333,7 @@ impl QuestionGenerator {
             .then(|| make_options(&mut self.rng, answer, &candidates, 1).map(|v| v.to_string()));
         Question {
             prompt,
-            answer,
+            answer: TypedAnswer::Int(answer),
             answer_text: answer.to_string(),
             options,
         }
@@ -339,20 +400,19 @@ impl App {
     }
 
     pub fn try_advance_if_correct(&mut self) {
-        if let Ok(value) = self.input.trim().parse::<i32>() {
-            if value == self.current.answer {
-                let elapsed = self.question_started_at.elapsed();
-                self.history.push(QuestionRecord {
-                    prompt: self.current.resolved_prompt(),
-                    elapsed,
-                    correct: true,
-                });
-                self.score += 1;
-                self.current = self.generator.next();
-                self.question_started_at = Instant::now();
-                self.input.clear();
-            }
+        if !self.current.answer.matches(self.input.trim()) {
+            return;
         }
+        let elapsed = self.question_started_at.elapsed();
+        self.history.push(QuestionRecord {
+            prompt: self.current.resolved_prompt(),
+            elapsed,
+            correct: true,
+        });
+        self.score += 1;
+        self.current = self.generator.next();
+        self.question_started_at = Instant::now();
+        self.input.clear();
     }
 
     /// Answer the current question with the option at `idx` (multiple-choice
@@ -473,6 +533,68 @@ mod tests {
             assert!(q.prompt.ends_with(", ?"), "bad prompt: {:?}", q.prompt);
             let options = q.options.expect("multiple choice options");
             assert!(options.contains(&q.answer_text));
+        }
+    }
+
+    #[test]
+    fn rational_answers_accept_equivalent_forms() {
+        let frac = TypedAnswer::Rational(7, 20);
+        assert!(frac.matches("7/20"));
+        assert!(frac.matches("14/40"), "unreduced form should match");
+        assert!(frac.matches("0.35"), "decimal form should match");
+        assert!(!frac.matches("7/2"));
+        assert!(!frac.matches("7/"));
+        assert!(!frac.matches("35"));
+        assert!(!frac.matches(""));
+
+        let pct = TypedAnswer::Rational(1250, 100);
+        assert!(pct.matches("12.5"));
+        assert!(pct.matches("12.50"));
+        assert!(pct.matches("25/2"));
+        assert!(!pct.matches("12"));
+        assert!(!pct.matches("12."));
+        assert!(!pct.matches("125"));
+    }
+
+    #[test]
+    fn fracpct_mode_accepts_typed_answers() {
+        let config = GameConfig {
+            mode: GameMode::FracPct,
+            add_max: 100,
+            mul_max_left: 12,
+            mul_max_right: 100,
+            add_enabled: true,
+            sub_enabled: true,
+            mul_enabled: true,
+            div_enabled: true,
+        };
+        let mut app = App::new(config, Duration::from_secs(60), false, 0);
+        for i in 0..1_000 {
+            // The displayed answer text is always a valid typed answer.
+            app.input = app.current.answer_text.clone();
+            app.try_advance_if_correct();
+            assert_eq!(app.history.len(), i + 1, "did not advance");
+            assert!(app.history[i].correct);
+        }
+    }
+
+    #[test]
+    fn fracpct_mode_builds_multiple_choice_options() {
+        let config = GameConfig {
+            mode: GameMode::FracPct,
+            add_max: 100,
+            mul_max_left: 12,
+            mul_max_right: 100,
+            add_enabled: true,
+            sub_enabled: true,
+            mul_enabled: true,
+            div_enabled: true,
+        };
+        let mut generator = QuestionGenerator::new(config, true);
+        for _ in 0..1_000 {
+            let q = generator.next();
+            let options = q.options.expect("multiple choice options");
+            assert!(options.contains(&q.answer_text), "{:?}", options);
         }
     }
 

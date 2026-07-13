@@ -1,5 +1,7 @@
+mod fracpct;
 mod game;
 mod model;
+mod numfmt;
 mod optiver;
 mod results;
 mod sequences;

@@ -169,7 +169,8 @@ pub fn run_game(
                     }
                 }
                 Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-                    KeyCode::Char(c) if c.is_ascii_digit() => {
+                    // '/' and '.' are for fraction and percentage answers.
+                    KeyCode::Char(c) if c.is_ascii_digit() || c == '/' || c == '.' => {
                         app.input.push(c);
                         app.try_advance_if_correct();
                     }

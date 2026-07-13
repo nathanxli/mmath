@@ -20,6 +20,7 @@ use crate::model::{ADD_MIN, GameConfig, GameMode, MUL_MIN};
 enum SetupField {
     ModeMentalMath,
     ModeSequences,
+    ModeFracPct,
     ModeOptiver,
     AddMode,
     SubMode,
@@ -126,6 +127,7 @@ impl SetupState {
         let mut fields = vec![
             SetupField::ModeMentalMath,
             SetupField::ModeSequences,
+            SetupField::ModeFracPct,
             SetupField::ModeOptiver,
             SetupField::TimeSeconds,
         ];
@@ -185,6 +187,7 @@ impl SetupState {
         match self.focus {
             SetupField::ModeMentalMath => None,
             SetupField::ModeSequences => None,
+            SetupField::ModeFracPct => None,
             SetupField::ModeOptiver => None,
             SetupField::AddMode => None,
             SetupField::SubMode => None,
@@ -213,6 +216,10 @@ impl SetupState {
             }
             SetupField::ModeSequences => {
                 self.select_mode(GameMode::Sequences);
+                true
+            }
+            SetupField::ModeFracPct => {
+                self.select_mode(GameMode::FracPct);
                 true
             }
             SetupField::ModeOptiver => {
@@ -289,7 +296,7 @@ impl SetupState {
                 config.validate()?;
                 config
             }
-            GameMode::Sequences | GameMode::Optiver80 => GameConfig {
+            GameMode::Sequences | GameMode::FracPct | GameMode::Optiver80 => GameConfig {
                 mode: self.mode,
                 add_max: 100,
                 mul_max_left: 12,
@@ -457,6 +464,7 @@ fn render_gamemode_column(
     let modes = [
         (GameMode::MentalMath, SetupField::ModeMentalMath),
         (GameMode::Sequences, SetupField::ModeSequences),
+        (GameMode::FracPct, SetupField::ModeFracPct),
         (GameMode::Optiver80, SetupField::ModeOptiver),
     ];
 
@@ -810,6 +818,23 @@ mod tests {
             state.focus_next();
         }
         assert_eq!(state.focus, SetupField::ModeSequences);
+    }
+
+    #[test]
+    fn fracpct_mode_shows_only_basic_options() {
+        let mut state = SetupState::new(false);
+        switch_to(&mut state, SetupField::ModeFracPct);
+        let order = state.field_order();
+        assert!(order.contains(&SetupField::TimeSeconds));
+        assert!(order.contains(&SetupField::MultChoice));
+        assert!(order.contains(&SetupField::LargeText));
+        assert!(!order.contains(&SetupField::AddMode));
+        assert!(!order.contains(&SetupField::AddHigh));
+        let config = state.parse_config().expect("fracpct config should parse");
+        assert!(config.game.mode == GameMode::FracPct);
+        assert!(!config.mult_choice);
+        assert!(!config.large_text);
+        assert_eq!(config.duration.as_secs(), 120);
     }
 
     #[test]
