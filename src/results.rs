@@ -202,12 +202,13 @@ pub fn run_results(
                 let best = recent_scores.iter().max().copied().unwrap_or(0);
                 let worst = recent_scores.iter().min().copied().unwrap_or(0);
 
-                for (idx, &score) in recent_scores.iter().rev().enumerate() {
+                let latest = recent_scores.len() - 1;
+                for (idx, &score) in recent_scores.iter().enumerate() {
                     let style = if recent_scores.len() == 1 || score == best {
                         Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
                     } else if score == worst {
                         Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
-                    } else if idx == 0 {
+                    } else if idx == latest {
                         Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD)
                     } else {
                         Style::default()
