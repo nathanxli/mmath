@@ -14,11 +14,12 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Padding, Paragraph};
 
-use crate::model::{ADD_MIN, GameConfig, GameMode, MUL_MIN};
+use crate::model::{ADD_MIN, GameConfig, GameMode, MUL_MIN, TABLE_MAX};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum SetupField {
     ModeMentalMath,
+    ModeMultTable,
     ModeSequences,
     ModeOptiver,
     AddMode,
@@ -28,6 +29,8 @@ enum SetupField {
     AddHigh,
     MulHighLeft,
     MulHighRight,
+    /// Toggle for number `i + 1` in the multiplication table range grid.
+    TableNum(usize),
     TimeSeconds,
     LargeText,
     MultChoice,
@@ -52,6 +55,7 @@ pub struct SetupState {
     sub_enabled: bool,
     mul_enabled: bool,
     div_enabled: bool,
+    table_numbers: [bool; TABLE_MAX],
     add_high_input: String,
     add_high_edited: bool,
     mul_high_left_input: String,
@@ -76,6 +80,7 @@ impl SetupState {
             sub_enabled: true,
             mul_enabled: true,
             div_enabled: true,
+            table_numbers: [true; TABLE_MAX],
             add_high_input: String::new(),
             add_high_edited: false,
             mul_high_left_input: String::new(),
@@ -102,6 +107,7 @@ impl SetupState {
         self.sub_enabled = true;
         self.mul_enabled = true;
         self.div_enabled = true;
+        self.table_numbers = [true; TABLE_MAX];
         self.add_high_input = String::from("100");
         self.add_high_edited = false;
         self.mul_high_left_input = String::from("12");
@@ -125,6 +131,7 @@ impl SetupState {
     fn field_order(&self) -> Vec<SetupField> {
         let mut fields = vec![
             SetupField::ModeMentalMath,
+            SetupField::ModeMultTable,
             SetupField::ModeSequences,
             SetupField::ModeOptiver,
             SetupField::TimeSeconds,
@@ -148,6 +155,9 @@ impl SetupState {
                 SetupField::MulHighLeft,
                 SetupField::MulHighRight,
             ]);
+        }
+        if self.mode == GameMode::MultTable {
+            fields.extend((0..TABLE_MAX).map(SetupField::TableNum));
         }
         fields.push(SetupField::LargeText);
         fields.push(SetupField::Start);
@@ -184,12 +194,14 @@ impl SetupState {
     fn active_input_mut(&mut self) -> Option<(&mut String, &mut bool)> {
         match self.focus {
             SetupField::ModeMentalMath => None,
+            SetupField::ModeMultTable => None,
             SetupField::ModeSequences => None,
             SetupField::ModeOptiver => None,
             SetupField::AddMode => None,
             SetupField::SubMode => None,
             SetupField::MulMode => None,
             SetupField::DivMode => None,
+            SetupField::TableNum(_) => None,
             SetupField::AddHigh => Some((&mut self.add_high_input, &mut self.add_high_edited)),
             SetupField::MulHighLeft => {
                 Some((&mut self.mul_high_left_input, &mut self.mul_high_left_edited))
@@ -209,6 +221,10 @@ impl SetupState {
         match self.focus {
             SetupField::ModeMentalMath => {
                 self.select_mode(GameMode::MentalMath);
+                true
+            }
+            SetupField::ModeMultTable => {
+                self.select_mode(GameMode::MultTable);
                 true
             }
             SetupField::ModeSequences => {
@@ -233,6 +249,10 @@ impl SetupState {
             }
             SetupField::DivMode => {
                 self.div_enabled = !self.div_enabled;
+                true
+            }
+            SetupField::TableNum(i) => {
+                self.table_numbers[i] = !self.table_numbers[i];
                 true
             }
             SetupField::LargeText => {
@@ -285,6 +305,22 @@ impl SetupState {
                     sub_enabled: self.sub_enabled,
                     mul_enabled: self.mul_enabled,
                     div_enabled: self.div_enabled,
+                    table_numbers: [true; TABLE_MAX],
+                };
+                config.validate()?;
+                config
+            }
+            GameMode::MultTable => {
+                let config = GameConfig {
+                    mode: self.mode,
+                    add_max: 100,
+                    mul_max_left: 12,
+                    mul_max_right: 100,
+                    add_enabled: true,
+                    sub_enabled: true,
+                    mul_enabled: true,
+                    div_enabled: true,
+                    table_numbers: self.table_numbers,
                 };
                 config.validate()?;
                 config
@@ -298,6 +334,7 @@ impl SetupState {
                 sub_enabled: true,
                 mul_enabled: true,
                 div_enabled: true,
+                table_numbers: [true; TABLE_MAX],
             },
         };
         // Optiver is locked to the real test's format: multiple choice, -1
@@ -456,6 +493,7 @@ fn render_gamemode_column(
 ) {
     let modes = [
         (GameMode::MentalMath, SetupField::ModeMentalMath),
+        (GameMode::MultTable, SetupField::ModeMultTable),
         (GameMode::Sequences, SetupField::ModeSequences),
         (GameMode::Optiver80, SetupField::ModeOptiver),
     ];
@@ -512,6 +550,7 @@ fn render_options_column(
     click_targets: &mut Vec<(Rect, SetupField)>,
 ) {
     let mental_math = setup.mode == GameMode::MentalMath;
+    let mult_table = setup.mode == GameMode::MultTable;
     let optiver = setup.mode == GameMode::Optiver80;
 
     let mut constraints = vec![
@@ -521,6 +560,9 @@ fn render_options_column(
     if mental_math {
         constraints.push(Constraint::Length(8)); // Operations
         constraints.push(Constraint::Length(5)); // Ranges
+    }
+    if mult_table {
+        constraints.push(Constraint::Length(11)); // Range (number grid)
     }
     constraints.push(Constraint::Length(3)); // Text
     constraints.push(Constraint::Min(0));
@@ -695,6 +737,57 @@ fn render_options_column(
         }
     }
 
+    if mult_table {
+        // --- Range: 3x5 clickable grid of the numbers 1-15, mirroring the
+        // Operations grid. ---
+        let range_block = Block::default().title("Range").borders(Borders::ALL);
+        let range_inner = range_block.inner(rows[row]);
+        frame.render_widget(range_block, rows[row]);
+        row += 1;
+
+        let range_rows = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Length(3),
+                Constraint::Length(3),
+            ])
+            .split(range_inner);
+
+        for i in 0..TABLE_MAX {
+            let cells = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Ratio(1, 5); 5])
+                .split(range_rows[i / 5]);
+            let cell_area = cells[i % 5];
+            let field = SetupField::TableNum(i);
+            let enabled = setup.table_numbers[i];
+            let focused = setup.focus == field;
+
+            let border_color = if enabled { Color::Green } else { Color::Red };
+            let cell_block = Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(border_color));
+            let cell_inner = cell_block.inner(cell_area);
+            frame.render_widget(cell_block, cell_area);
+
+            let mut style = if enabled {
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+            };
+            if focused {
+                style = style.add_modifier(Modifier::UNDERLINED);
+            }
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled((i + 1).to_string(), style)))
+                    .alignment(Alignment::Center),
+                cell_inner,
+            );
+            click_targets.push((cell_area, field));
+        }
+    }
+
     // --- Text. ---
     let text_block = Block::default()
         .title("Text")
@@ -810,6 +903,37 @@ mod tests {
             state.focus_next();
         }
         assert_eq!(state.focus, SetupField::ModeSequences);
+    }
+
+    #[test]
+    fn mult_table_shows_number_toggles_and_defaults_all_on() {
+        let mut state = SetupState::new(false);
+        switch_to(&mut state, SetupField::ModeMultTable);
+        let order = state.field_order();
+        assert!(!order.contains(&SetupField::AddMode));
+        assert!(!order.contains(&SetupField::AddHigh));
+        for i in 0..TABLE_MAX {
+            assert!(order.contains(&SetupField::TableNum(i)));
+        }
+        assert!(!state.mult_choice, "multiple choice defaults off");
+        let config = state.parse_config().expect("default mult table config");
+        assert!(config.game.mode == GameMode::MultTable);
+        assert!(config.game.table_numbers.iter().all(|&on| on));
+        assert!(!config.mult_choice);
+    }
+
+    #[test]
+    fn mult_table_requires_at_least_one_number() {
+        let mut state = SetupState::new(false);
+        switch_to(&mut state, SetupField::ModeMultTable);
+        for i in 0..TABLE_MAX {
+            switch_to(&mut state, SetupField::TableNum(i));
+        }
+        assert!(state.parse_config().is_err());
+        switch_to(&mut state, SetupField::TableNum(4));
+        let config = state.parse_config().expect("one number is enough");
+        assert!(config.game.table_numbers[4]);
+        assert_eq!(config.game.table_numbers.iter().filter(|&&on| on).count(), 1);
     }
 
     #[test]

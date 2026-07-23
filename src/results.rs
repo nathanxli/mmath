@@ -60,6 +60,17 @@ pub fn run_results(
                     MUL_MIN, app.config.mul_max_left, MUL_MIN, app.config.mul_max_right
                 )));
             }
+            if app.config.mode == GameMode::MultTable {
+                let numbers: Vec<String> = app
+                    .config
+                    .table_numbers
+                    .iter()
+                    .enumerate()
+                    .filter(|&(_, &on)| on)
+                    .map(|(i, _)| (i + 1).to_string())
+                    .collect();
+                summary.push(Line::from(format!("Numbers: {}", numbers.join(", "))));
+            }
             summary.push(Line::from(format!(
                 "Time: {} seconds",
                 app.duration.as_secs()

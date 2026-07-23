@@ -9,6 +9,9 @@ use crate::sequences;
 pub const ADD_MIN: i32 = 2;
 pub const MUL_MIN: i32 = 2;
 
+/// Numbers selectable in the multiplication table mode: 1..=TABLE_MAX.
+pub const TABLE_MAX: usize = 15;
+
 const SKEW_GAMMA: f64 = 1.3;
 
 /// Draw an integer in [min, max] with a mild symmetric bias toward the extremes
@@ -39,6 +42,7 @@ enum Op {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum GameMode {
     MentalMath,
+    MultTable,
     Sequences,
     Optiver80,
 }
@@ -47,6 +51,7 @@ impl GameMode {
     pub fn title(self) -> &'static str {
         match self {
             GameMode::MentalMath => "Mental Math",
+            GameMode::MultTable => "Multiplication Table",
             GameMode::Sequences => "Sequences",
             GameMode::Optiver80 => "Optiver 80 in 8",
         }
@@ -89,10 +94,20 @@ pub struct GameConfig {
     pub sub_enabled: bool,
     pub mul_enabled: bool,
     pub div_enabled: bool,
+    /// Which numbers (1..=TABLE_MAX) are practiced in multiplication table
+    /// mode; index i is the number i + 1.
+    pub table_numbers: [bool; TABLE_MAX],
 }
 
 impl GameConfig {
     pub fn validate(&self) -> Result<(), &'static str> {
+        if self.mode == GameMode::MultTable {
+            return if self.table_numbers.iter().any(|&on| on) {
+                Ok(())
+            } else {
+                Err("At least one number must be selected.")
+            };
+        }
         if self.add_max < ADD_MIN {
             return Err("Addition high end must be at least 2.");
         }
@@ -159,8 +174,49 @@ impl QuestionGenerator {
     fn next(&mut self) -> Question {
         match self.config.mode {
             GameMode::MentalMath => self.next_mental_math(),
+            GameMode::MultTable => self.next_mult_table(),
             GameMode::Sequences => self.next_sequence(),
             GameMode::Optiver80 => self.next_optiver(),
+        }
+    }
+
+    /// One multiplication table question: m is drawn from the selected
+    /// numbers, and the other factor is drawn from 2..=max(10, m), so small
+    /// tables run to x10 and larger tables extend to xm.
+    fn next_mult_table(&mut self) -> Question {
+        let selected: Vec<i32> = self
+            .config
+            .table_numbers
+            .iter()
+            .enumerate()
+            .filter(|&(_, &on)| on)
+            .map(|(i, _)| i as i32 + 1)
+            .collect();
+        let m = selected[self.rng.random_range(0..selected.len())];
+        let n = self.rng.random_range(MUL_MIN..=m.max(10));
+        let (left, right) = if self.rng.random_bool(0.5) {
+            (m, n)
+        } else {
+            (n, m)
+        };
+        let answer = m * n;
+        // Off-by-one-operand errors keep a plausible last digit.
+        let candidates = vec![
+            (m - 1) * n,
+            (m + 1) * n,
+            m * (n - 1),
+            m * (n + 1),
+            answer - 10,
+            answer + 10,
+        ];
+        let options = self
+            .mult_choice
+            .then(|| make_options(&mut self.rng, answer, &candidates, 1).map(|v| v.to_string()));
+        Question {
+            prompt: format!("{} * {} = ?", left, right),
+            answer,
+            answer_text: answer.to_string(),
+            options,
         }
     }
 
@@ -466,6 +522,7 @@ mod tests {
             sub_enabled: true,
             mul_enabled: true,
             div_enabled: true,
+            table_numbers: [true; TABLE_MAX],
         };
         let mut generator = QuestionGenerator::new(config, true);
         for _ in 0..1_000 {
@@ -474,6 +531,73 @@ mod tests {
             let options = q.options.expect("multiple choice options");
             assert!(options.contains(&q.answer_text));
         }
+    }
+
+    #[test]
+    fn mult_table_draws_factors_from_selected_numbers() {
+        let mut table_numbers = [false; TABLE_MAX];
+        table_numbers[6] = true; // 7
+        table_numbers[12] = true; // 13
+        let config = GameConfig {
+            mode: GameMode::MultTable,
+            add_max: 100,
+            mul_max_left: 12,
+            mul_max_right: 100,
+            add_enabled: true,
+            sub_enabled: true,
+            mul_enabled: true,
+            div_enabled: true,
+            table_numbers,
+        };
+        let mut generator = QuestionGenerator::new(config, true);
+        for _ in 0..1_000 {
+            let q = generator.next();
+            let parts: Vec<&str> = q.prompt.split_whitespace().collect();
+            assert_eq!(parts[1], "*", "bad prompt: {:?}", q.prompt);
+            let a: i32 = parts[0].parse().unwrap();
+            let b: i32 = parts[2].parse().unwrap();
+            assert_eq!(q.answer_text, (a * b).to_string());
+            // One factor is a selected number m; the other lies in
+            // MUL_MIN..=max(10, m).
+            let valid = |m: i32, n: i32| n >= MUL_MIN && n <= m.max(10);
+            assert!(
+                (a == 7 && valid(7, b))
+                    || (b == 7 && valid(7, a))
+                    || (a == 13 && valid(13, b))
+                    || (b == 13 && valid(13, a)),
+                "unexpected factors: {:?}",
+                q.prompt
+            );
+            let options = q.options.expect("multiple choice options");
+            assert!(options.contains(&q.answer_text));
+        }
+    }
+
+    #[test]
+    fn mult_table_requires_a_selected_number() {
+        let config = GameConfig {
+            mode: GameMode::MultTable,
+            add_max: 100,
+            mul_max_left: 12,
+            mul_max_right: 100,
+            add_enabled: false,
+            sub_enabled: false,
+            mul_enabled: false,
+            div_enabled: false,
+            table_numbers: [false; TABLE_MAX],
+        };
+        assert!(config.validate().is_err());
+        let config = GameConfig {
+            table_numbers: {
+                let mut on = [false; TABLE_MAX];
+                on[0] = true;
+                on
+            },
+            ..config
+        };
+        // Operation toggles are Mental Math options; they must not block a
+        // multiplication table round.
+        assert!(config.validate().is_ok());
     }
 
     #[test]
@@ -487,6 +611,7 @@ mod tests {
             sub_enabled: true,
             mul_enabled: true,
             div_enabled: true,
+            table_numbers: [true; TABLE_MAX],
         };
         let mut app = App::new(config, Duration::from_secs(60), true, 0);
         let answer_text = app.current.answer_text.clone();
@@ -517,6 +642,7 @@ mod tests {
             sub_enabled: true,
             mul_enabled: true,
             div_enabled: true,
+            table_numbers: [true; TABLE_MAX],
         };
         let mut app = App::new(config, Duration::from_secs(480), true, -1);
         assert_eq!(app.question_limit, Some(optiver::QUESTION_LIMIT));
