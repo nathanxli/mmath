@@ -70,6 +70,10 @@ pub fn run_results(
                     .map(|(i, _)| (i + 1).to_string())
                     .collect();
                 summary.push(Line::from(format!("Numbers: {}", numbers.join(", "))));
+                summary.push(Line::from(format!(
+                    "Other factor: {} to {}",
+                    MUL_MIN, app.config.table_factor_max
+                )));
             }
             summary.push(Line::from(format!(
                 "Time: {} seconds",

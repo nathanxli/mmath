@@ -14,7 +14,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Padding, Paragraph};
 
-use crate::model::{ADD_MIN, GameConfig, GameMode, MUL_MIN, TABLE_MAX};
+use crate::model::{
+    ADD_MIN, GameConfig, GameMode, MUL_MIN, TABLE_MAX, default_table_factor_max,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum SetupField {
@@ -33,6 +35,8 @@ enum SetupField {
     TableNum(usize),
     /// Button that turns every multiplication table number on at once.
     TableSelectAll,
+    /// Numeric upper bound for the other factor n in multiplication table mode.
+    TableFactorMax,
     TimeSeconds,
     LargeText,
     MultChoice,
@@ -58,6 +62,10 @@ pub struct SetupState {
     mul_enabled: bool,
     div_enabled: bool,
     table_numbers: [bool; TABLE_MAX],
+    table_factor_max_input: String,
+    /// True once the user has typed a factor bound, which stops it from
+    /// auto-tracking the selected numbers.
+    table_factor_max_edited: bool,
     add_high_input: String,
     add_high_edited: bool,
     mul_high_left_input: String,
@@ -83,6 +91,8 @@ impl SetupState {
             mul_enabled: true,
             div_enabled: true,
             table_numbers: [false; TABLE_MAX],
+            table_factor_max_input: String::new(),
+            table_factor_max_edited: false,
             add_high_input: String::new(),
             add_high_edited: false,
             mul_high_left_input: String::new(),
@@ -110,6 +120,8 @@ impl SetupState {
         self.mul_enabled = true;
         self.div_enabled = true;
         self.table_numbers = [false; TABLE_MAX];
+        self.table_factor_max_edited = false;
+        self.table_factor_max_input = default_table_factor_max(&self.table_numbers).to_string();
         self.add_high_input = String::from("100");
         self.add_high_edited = false;
         self.mul_high_left_input = String::from("12");
@@ -126,6 +138,14 @@ impl SetupState {
         self.mult_choice = optiver || self.mult_choice_default;
         self.penalize_wrong = optiver;
         self.large_text = false;
+    }
+
+    /// Re-derive the other-factor bound from the selected numbers, unless the
+    /// user has typed their own value. Called whenever a number toggles.
+    fn sync_table_factor_max(&mut self) {
+        if !self.table_factor_max_edited {
+            self.table_factor_max_input = default_table_factor_max(&self.table_numbers).to_string();
+        }
     }
 
     /// The focusable fields for the current gamemode, in navigation order:
@@ -161,6 +181,7 @@ impl SetupState {
         if self.mode == GameMode::MultTable {
             fields.push(SetupField::TableSelectAll);
             fields.extend((0..TABLE_MAX).map(SetupField::TableNum));
+            fields.push(SetupField::TableFactorMax);
         }
         fields.push(SetupField::LargeText);
         fields.push(SetupField::Start);
@@ -206,6 +227,10 @@ impl SetupState {
             SetupField::DivMode => None,
             SetupField::TableNum(_) => None,
             SetupField::TableSelectAll => None,
+            SetupField::TableFactorMax => Some((
+                &mut self.table_factor_max_input,
+                &mut self.table_factor_max_edited,
+            )),
             SetupField::AddHigh => Some((&mut self.add_high_input, &mut self.add_high_edited)),
             SetupField::MulHighLeft => {
                 Some((&mut self.mul_high_left_input, &mut self.mul_high_left_edited))
@@ -257,12 +282,14 @@ impl SetupState {
             }
             SetupField::TableNum(i) => {
                 self.table_numbers[i] = !self.table_numbers[i];
+                self.sync_table_factor_max();
                 true
             }
             SetupField::TableSelectAll => {
                 // Turn everything on, or off again once it is all on.
                 let all_on = self.table_numbers.iter().all(|&on| on);
                 self.table_numbers = [!all_on; TABLE_MAX];
+                self.sync_table_factor_max();
                 true
             }
             SetupField::LargeText => {
@@ -316,11 +343,16 @@ impl SetupState {
                     mul_enabled: self.mul_enabled,
                     div_enabled: self.div_enabled,
                     table_numbers: [true; TABLE_MAX],
+                    table_factor_max: 10,
                 };
                 config.validate()?;
                 config
             }
             GameMode::MultTable => {
+                let table_factor_max = self
+                    .table_factor_max_input
+                    .parse::<i32>()
+                    .map_err(|_| "Other factor high end must be a whole number.")?;
                 let config = GameConfig {
                     mode: self.mode,
                     add_max: 100,
@@ -331,6 +363,7 @@ impl SetupState {
                     mul_enabled: true,
                     div_enabled: true,
                     table_numbers: self.table_numbers,
+                    table_factor_max,
                 };
                 config.validate()?;
                 config
@@ -345,6 +378,7 @@ impl SetupState {
                 mul_enabled: true,
                 div_enabled: true,
                 table_numbers: [true; TABLE_MAX],
+                table_factor_max: 10,
             },
         };
         // Optiver is locked to the real test's format: multiple choice, -1
@@ -758,8 +792,9 @@ fn render_options_column(
         let range_sections = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1), // "Select all" button
-                Constraint::Min(0),    // number grid
+                Constraint::Length(1), // select/deselect all button
+                Constraint::Length(9), // number grid
+                Constraint::Length(1), // other-factor bound
             ])
             .split(range_inner);
 
@@ -825,6 +860,19 @@ fn render_options_column(
             );
             click_targets.push((cell_area, field));
         }
+
+        // --- Other factor n: MUL_MIN..=this bound. Tracks the selected
+        // numbers until the user types a value of their own. ---
+        frame.render_widget(
+            Paragraph::new(range_line(
+                "Other factor upper bound ",
+                MUL_MIN,
+                setup.table_factor_max_input.as_str(),
+                setup.focus == SetupField::TableFactorMax,
+            )),
+            range_sections[2],
+        );
+        click_targets.push((range_sections[2], SetupField::TableFactorMax));
     }
 
     // --- Text. ---
@@ -952,6 +1000,7 @@ mod tests {
         assert!(!order.contains(&SetupField::AddMode));
         assert!(!order.contains(&SetupField::AddHigh));
         assert!(order.contains(&SetupField::TableSelectAll));
+        assert!(order.contains(&SetupField::TableFactorMax));
         for i in 0..TABLE_MAX {
             assert!(order.contains(&SetupField::TableNum(i)));
         }
@@ -959,6 +1008,48 @@ mod tests {
         // Every number starts off, so a fresh mult table config cannot start.
         assert!(state.table_numbers.iter().all(|&on| !on));
         assert!(state.parse_config().is_err());
+    }
+
+    #[test]
+    fn mult_table_factor_bound_tracks_selection_until_manually_edited() {
+        let mut state = SetupState::new(false);
+        switch_to(&mut state, SetupField::ModeMultTable);
+        // No numbers selected: bound sits at the floor of 10.
+        assert_eq!(state.table_factor_max_input, "10");
+        // Selecting a small table keeps the floor; a big one lifts the bound.
+        switch_to(&mut state, SetupField::TableNum(2)); // 3
+        assert_eq!(state.table_factor_max_input, "10");
+        switch_to(&mut state, SetupField::TableNum(13)); // 14
+        assert_eq!(state.table_factor_max_input, "14");
+
+        // Typing a value freezes it: further toggles no longer move it.
+        state.focus = SetupField::TableFactorMax;
+        for c in "20".chars() {
+            let (input, edited) = state.active_input_mut().unwrap();
+            if !*edited {
+                input.clear();
+                *edited = true;
+            }
+            input.push(c);
+        }
+        switch_to(&mut state, SetupField::TableNum(14)); // 15
+        assert_eq!(state.table_factor_max_input, "20");
+        let config = state.parse_config().expect("edited bound parses");
+        assert_eq!(config.game.table_factor_max, 20);
+    }
+
+    #[test]
+    fn mult_table_switching_modes_resets_the_factor_bound() {
+        let mut state = SetupState::new(false);
+        switch_to(&mut state, SetupField::ModeMultTable);
+        state.focus = SetupField::TableFactorMax;
+        state.table_factor_max_input = String::from("99");
+        state.table_factor_max_edited = true;
+        // Leaving and returning restores the auto-tracking default.
+        switch_to(&mut state, SetupField::ModeMentalMath);
+        switch_to(&mut state, SetupField::ModeMultTable);
+        assert_eq!(state.table_factor_max_input, "10");
+        assert!(!state.table_factor_max_edited);
     }
 
     #[test]

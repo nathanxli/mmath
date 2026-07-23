@@ -12,6 +12,23 @@ pub const MUL_MIN: i32 = 2;
 /// Numbers selectable in the multiplication table mode: 1..=TABLE_MAX.
 pub const TABLE_MAX: usize = 15;
 
+/// The other factor in multiplication table mode never runs below this.
+pub const TABLE_FACTOR_FLOOR: i32 = 10;
+
+/// The default upper bound for the other factor given the selected numbers:
+/// the largest selected number, but never below TABLE_FACTOR_FLOOR, so small
+/// tables still run to x10. Falls back to the floor when nothing is selected.
+pub fn default_table_factor_max(table_numbers: &[bool; TABLE_MAX]) -> i32 {
+    let highest = table_numbers
+        .iter()
+        .enumerate()
+        .filter(|&(_, &on)| on)
+        .map(|(i, _)| i as i32 + 1)
+        .max()
+        .unwrap_or(0);
+    highest.max(TABLE_FACTOR_FLOOR)
+}
+
 const SKEW_GAMMA: f64 = 1.3;
 
 /// Draw an integer in [min, max] with a mild symmetric bias toward the extremes
@@ -97,16 +114,21 @@ pub struct GameConfig {
     /// Which numbers (1..=TABLE_MAX) are practiced in multiplication table
     /// mode; index i is the number i + 1.
     pub table_numbers: [bool; TABLE_MAX],
+    /// Upper bound for the other factor n in multiplication table mode; n is
+    /// drawn from MUL_MIN..=table_factor_max.
+    pub table_factor_max: i32,
 }
 
 impl GameConfig {
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.mode == GameMode::MultTable {
-            return if self.table_numbers.iter().any(|&on| on) {
-                Ok(())
-            } else {
-                Err("At least one number must be selected.")
-            };
+            if !self.table_numbers.iter().any(|&on| on) {
+                return Err("At least one number must be selected.");
+            }
+            if self.table_factor_max < MUL_MIN {
+                return Err("Other factor high end must be at least 2.");
+            }
+            return Ok(());
         }
         if self.add_max < ADD_MIN {
             return Err("Addition high end must be at least 2.");
@@ -181,8 +203,8 @@ impl QuestionGenerator {
     }
 
     /// One multiplication table question: m is drawn from the selected
-    /// numbers, and the other factor is drawn from 2..=max(10, m), so small
-    /// tables run to x10 and larger tables extend to xm.
+    /// numbers, and the other factor n is drawn from 2..=table_factor_max
+    /// (which defaults to max(10, largest selected number) but can be tuned).
     fn next_mult_table(&mut self) -> Question {
         let selected: Vec<i32> = self
             .config
@@ -193,7 +215,9 @@ impl QuestionGenerator {
             .map(|(i, _)| i as i32 + 1)
             .collect();
         let m = selected[self.rng.random_range(0..selected.len())];
-        let n = self.rng.random_range(MUL_MIN..=m.max(10));
+        let n = self
+            .rng
+            .random_range(MUL_MIN..=self.config.table_factor_max.max(MUL_MIN));
         let (left, right) = if self.rng.random_bool(0.5) {
             (m, n)
         } else {
@@ -523,6 +547,7 @@ mod tests {
             mul_enabled: true,
             div_enabled: true,
             table_numbers: [true; TABLE_MAX],
+            table_factor_max: 10,
         };
         let mut generator = QuestionGenerator::new(config, true);
         for _ in 0..1_000 {
@@ -548,6 +573,7 @@ mod tests {
             mul_enabled: true,
             div_enabled: true,
             table_numbers,
+            table_factor_max: 13,
         };
         let mut generator = QuestionGenerator::new(config, true);
         for _ in 0..1_000 {
@@ -557,20 +583,58 @@ mod tests {
             let a: i32 = parts[0].parse().unwrap();
             let b: i32 = parts[2].parse().unwrap();
             assert_eq!(q.answer_text, (a * b).to_string());
-            // One factor is a selected number m; the other lies in
-            // MUL_MIN..=max(10, m).
-            let valid = |m: i32, n: i32| n >= MUL_MIN && n <= m.max(10);
+            // One factor is a selected number m (7 or 13); the other n lies in
+            // MUL_MIN..=table_factor_max (13).
+            let valid = |m: i32, n: i32| n >= MUL_MIN && n <= 13 && (m == 7 || m == 13);
             assert!(
-                (a == 7 && valid(7, b))
-                    || (b == 7 && valid(7, a))
-                    || (a == 13 && valid(13, b))
-                    || (b == 13 && valid(13, a)),
+                valid(7, b) && a == 7
+                    || valid(7, a) && b == 7
+                    || valid(13, b) && a == 13
+                    || valid(13, a) && b == 13,
                 "unexpected factors: {:?}",
                 q.prompt
             );
             let options = q.options.expect("multiple choice options");
             assert!(options.contains(&q.answer_text));
         }
+    }
+
+    #[test]
+    fn default_table_factor_max_tracks_the_largest_selected_number() {
+        // Nothing selected, or only small tables: floored at 10.
+        assert_eq!(default_table_factor_max(&[false; TABLE_MAX]), 10);
+        let mut only_seven = [false; TABLE_MAX];
+        only_seven[6] = true;
+        assert_eq!(default_table_factor_max(&only_seven), 10);
+        // A larger table lifts the bound to that number.
+        let mut with_thirteen = only_seven;
+        with_thirteen[12] = true;
+        assert_eq!(default_table_factor_max(&with_thirteen), 13);
+        assert_eq!(default_table_factor_max(&[true; TABLE_MAX]), TABLE_MAX as i32);
+    }
+
+    #[test]
+    fn mult_table_rejects_a_factor_bound_below_two() {
+        let mut table_numbers = [false; TABLE_MAX];
+        table_numbers[0] = true;
+        let config = GameConfig {
+            mode: GameMode::MultTable,
+            add_max: 100,
+            mul_max_left: 12,
+            mul_max_right: 100,
+            add_enabled: true,
+            sub_enabled: true,
+            mul_enabled: true,
+            div_enabled: true,
+            table_numbers,
+            table_factor_max: 1,
+        };
+        assert!(config.validate().is_err());
+        let config = GameConfig {
+            table_factor_max: 2,
+            ..config
+        };
+        assert!(config.validate().is_ok());
     }
 
     #[test]
@@ -585,6 +649,7 @@ mod tests {
             mul_enabled: false,
             div_enabled: false,
             table_numbers: [false; TABLE_MAX],
+            table_factor_max: 10,
         };
         assert!(config.validate().is_err());
         let config = GameConfig {
@@ -612,6 +677,7 @@ mod tests {
             mul_enabled: true,
             div_enabled: true,
             table_numbers: [true; TABLE_MAX],
+            table_factor_max: 10,
         };
         let mut app = App::new(config, Duration::from_secs(60), true, 0);
         let answer_text = app.current.answer_text.clone();
@@ -643,6 +709,7 @@ mod tests {
             mul_enabled: true,
             div_enabled: true,
             table_numbers: [true; TABLE_MAX],
+            table_factor_max: 10,
         };
         let mut app = App::new(config, Duration::from_secs(480), true, -1);
         assert_eq!(app.question_limit, Some(optiver::QUESTION_LIMIT));
