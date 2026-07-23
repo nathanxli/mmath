@@ -31,6 +31,8 @@ enum SetupField {
     MulHighRight,
     /// Toggle for number `i + 1` in the multiplication table range grid.
     TableNum(usize),
+    /// Button that turns every multiplication table number on at once.
+    TableSelectAll,
     TimeSeconds,
     LargeText,
     MultChoice,
@@ -80,7 +82,7 @@ impl SetupState {
             sub_enabled: true,
             mul_enabled: true,
             div_enabled: true,
-            table_numbers: [true; TABLE_MAX],
+            table_numbers: [false; TABLE_MAX],
             add_high_input: String::new(),
             add_high_edited: false,
             mul_high_left_input: String::new(),
@@ -107,7 +109,7 @@ impl SetupState {
         self.sub_enabled = true;
         self.mul_enabled = true;
         self.div_enabled = true;
-        self.table_numbers = [true; TABLE_MAX];
+        self.table_numbers = [false; TABLE_MAX];
         self.add_high_input = String::from("100");
         self.add_high_edited = false;
         self.mul_high_left_input = String::from("12");
@@ -157,6 +159,7 @@ impl SetupState {
             ]);
         }
         if self.mode == GameMode::MultTable {
+            fields.push(SetupField::TableSelectAll);
             fields.extend((0..TABLE_MAX).map(SetupField::TableNum));
         }
         fields.push(SetupField::LargeText);
@@ -202,6 +205,7 @@ impl SetupState {
             SetupField::MulMode => None,
             SetupField::DivMode => None,
             SetupField::TableNum(_) => None,
+            SetupField::TableSelectAll => None,
             SetupField::AddHigh => Some((&mut self.add_high_input, &mut self.add_high_edited)),
             SetupField::MulHighLeft => {
                 Some((&mut self.mul_high_left_input, &mut self.mul_high_left_edited))
@@ -253,6 +257,12 @@ impl SetupState {
             }
             SetupField::TableNum(i) => {
                 self.table_numbers[i] = !self.table_numbers[i];
+                true
+            }
+            SetupField::TableSelectAll => {
+                // Turn everything on, or off again once it is all on.
+                let all_on = self.table_numbers.iter().all(|&on| on);
+                self.table_numbers = [!all_on; TABLE_MAX];
                 true
             }
             SetupField::LargeText => {
@@ -562,7 +572,7 @@ fn render_options_column(
         constraints.push(Constraint::Length(5)); // Ranges
     }
     if mult_table {
-        constraints.push(Constraint::Length(11)); // Range (number grid)
+        constraints.push(Constraint::Length(13)); // Range (button + number grid)
     }
     constraints.push(Constraint::Length(3)); // Text
     constraints.push(Constraint::Min(0));
@@ -745,6 +755,35 @@ fn render_options_column(
         frame.render_widget(range_block, rows[row]);
         row += 1;
 
+        let range_sections = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(1), // "Select all" button
+                Constraint::Min(0),    // number grid
+            ])
+            .split(range_inner);
+
+        // --- Select/deselect all: turns every number on, or off once all on. ---
+        let all_on = setup.table_numbers.iter().all(|&on| on);
+        let focused = setup.focus == SetupField::TableSelectAll;
+        let mut all_style = Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD);
+        if focused {
+            all_style = all_style.add_modifier(Modifier::UNDERLINED);
+        }
+        let all_label = if all_on {
+            "[ Deselect all ]"
+        } else {
+            "[ Select all ]"
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(all_label, all_style)))
+                .alignment(Alignment::Center),
+            range_sections[0],
+        );
+        click_targets.push((range_sections[0], SetupField::TableSelectAll));
+
         let range_rows = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
@@ -752,7 +791,7 @@ fn render_options_column(
                 Constraint::Length(3),
                 Constraint::Length(3),
             ])
-            .split(range_inner);
+            .split(range_sections[1]);
 
         for i in 0..TABLE_MAX {
             let cells = Layout::default()
@@ -906,29 +945,42 @@ mod tests {
     }
 
     #[test]
-    fn mult_table_shows_number_toggles_and_defaults_all_on() {
+    fn mult_table_shows_number_toggles_and_defaults_all_off() {
         let mut state = SetupState::new(false);
         switch_to(&mut state, SetupField::ModeMultTable);
         let order = state.field_order();
         assert!(!order.contains(&SetupField::AddMode));
         assert!(!order.contains(&SetupField::AddHigh));
+        assert!(order.contains(&SetupField::TableSelectAll));
         for i in 0..TABLE_MAX {
             assert!(order.contains(&SetupField::TableNum(i)));
         }
         assert!(!state.mult_choice, "multiple choice defaults off");
-        let config = state.parse_config().expect("default mult table config");
+        // Every number starts off, so a fresh mult table config cannot start.
+        assert!(state.table_numbers.iter().all(|&on| !on));
+        assert!(state.parse_config().is_err());
+    }
+
+    #[test]
+    fn mult_table_select_all_toggles_between_all_on_and_all_off() {
+        let mut state = SetupState::new(false);
+        switch_to(&mut state, SetupField::ModeMultTable);
+        // First activation selects every number...
+        switch_to(&mut state, SetupField::TableSelectAll);
+        assert!(state.table_numbers.iter().all(|&on| on));
+        let config = state.parse_config().expect("all numbers selected");
         assert!(config.game.mode == GameMode::MultTable);
         assert!(config.game.table_numbers.iter().all(|&on| on));
-        assert!(!config.mult_choice);
+        // ...a second activation deselects them all.
+        switch_to(&mut state, SetupField::TableSelectAll);
+        assert!(state.table_numbers.iter().all(|&on| !on));
+        assert!(state.parse_config().is_err());
     }
 
     #[test]
     fn mult_table_requires_at_least_one_number() {
         let mut state = SetupState::new(false);
         switch_to(&mut state, SetupField::ModeMultTable);
-        for i in 0..TABLE_MAX {
-            switch_to(&mut state, SetupField::TableNum(i));
-        }
         assert!(state.parse_config().is_err());
         switch_to(&mut state, SetupField::TableNum(4));
         let config = state.parse_config().expect("one number is enough");
