@@ -2,7 +2,10 @@ use std::error::Error;
 use std::io;
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, MouseEventKind,
+};
+use crossterm::execute;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -30,6 +33,20 @@ fn mean_stdev(values: &[f64]) -> Option<(f64, f64)> {
 
 /// `recent_scores` holds the scores of this session's attempts, oldest first.
 pub fn run_results(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    app: &App,
+    recent_scores: &[i32],
+) -> Result<ResultsAction, Box<dyn Error>> {
+    // Capture the mouse so the history list is scrollable with the wheel,
+    // mirroring setup.rs. Disable it on exit so normal terminal text
+    // selection keeps working elsewhere.
+    execute!(io::stdout(), EnableMouseCapture)?;
+    let outcome = run_results_loop(terminal, app, recent_scores);
+    let _ = execute!(io::stdout(), DisableMouseCapture);
+    outcome
+}
+
+fn run_results_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &App,
     recent_scores: &[i32],
@@ -244,7 +261,7 @@ pub fn run_results(
             );
             frame.render_widget(session_stats_widget, right_chunks[1]);
 
-            let footer = Paragraph::new("Esc to exit results. 'r' to restart with same parameters. Up/Down to scroll.")
+            let footer = Paragraph::new("Esc to exit results. 'r' to restart with same parameters.")
                 .block(
                     Block::default()
                         .title("Done")
@@ -266,6 +283,16 @@ pub fn run_results(
                     }
                     KeyCode::Char('r') | KeyCode::Char('R') => return Ok(ResultsAction::Restart),
                     KeyCode::Esc => return Ok(ResultsAction::Exit),
+                    _ => {}
+                },
+                Event::Mouse(mouse) => match mouse.kind {
+                    MouseEventKind::ScrollUp => {
+                        scroll = scroll.saturating_sub(1);
+                    }
+                    MouseEventKind::ScrollDown => {
+                        let max_scroll = app.history.len().saturating_sub(1);
+                        scroll = (scroll + 1).min(max_scroll);
+                    }
                     _ => {}
                 },
                 _ => {}
